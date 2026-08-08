@@ -5,4 +5,4 @@ Comment=Keep Shogun 2 multiplayer campaign saves in sync so a desync is a five-m
 Exec=/usr/bin/shogun2sync
 Icon=shogun2sync
 Terminal=false
-Categories=Game;Utility;
+Categories=Game;
