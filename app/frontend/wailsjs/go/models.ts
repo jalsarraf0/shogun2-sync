@@ -27,6 +27,8 @@ export namespace conflicts {
 	    path: string;
 	    name: string;
 	    modified: number;
+	    reason?: string;
+	    original?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new File(source);
@@ -37,6 +39,8 @@ export namespace conflicts {
 	        this.path = source["path"];
 	        this.name = source["name"];
 	        this.modified = source["modified"];
+	        this.reason = source["reason"];
+	        this.original = source["original"];
 	    }
 	}
 
@@ -67,6 +71,7 @@ export namespace main {
 	    enabled: boolean;
 	    active: boolean;
 	    lastSync?: string;
+	    lastError?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new GoogleDriveMirrorStatus(source);
@@ -78,6 +83,7 @@ export namespace main {
 	        this.enabled = source["enabled"];
 	        this.active = source["active"];
 	        this.lastSync = source["lastSync"];
+	        this.lastError = source["lastError"];
 	    }
 	}
 
@@ -159,6 +165,24 @@ export namespace orchestrate {
 	        this.syncTarget = source["syncTarget"];
 	        this.linked = source["linked"];
 	        this.linkedOk = source["linkedOk"];
+	    }
+	}
+	export class UndoResult {
+	    ok: boolean;
+	    error?: string;
+	    savePath: string;
+	    restored: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new UndoResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.error = source["error"];
+	        this.savePath = source["savePath"];
+	        this.restored = source["restored"];
 	    }
 	}
 

@@ -34,6 +34,10 @@ export function GetGoogleDriveMirrorStatus() {
   return window['go']['main']['App']['GetGoogleDriveMirrorStatus']();
 }
 
+export function GetLogTail() {
+  return window['go']['main']['App']['GetLogTail']();
+}
+
 export function GetStatus() {
   return window['go']['main']['App']['GetStatus']();
 }
@@ -56,6 +60,10 @@ export function RunRecover() {
 
 export function RunSetup(arg1, arg2) {
   return window['go']['main']['App']['RunSetup'](arg1, arg2);
+}
+
+export function RunUndo() {
+  return window['go']['main']['App']['RunUndo']();
 }
 
 export function SaveConfigCmd(arg1) {

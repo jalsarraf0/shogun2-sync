@@ -137,6 +137,62 @@ func Status(cfg config.Config) StatusResult {
 	return res
 }
 
+// UndoResult reports what Undo did, for the confirmation the player sees.
+type UndoResult struct {
+	OK       bool   `json:"ok"`
+	Error    string `json:"error,omitempty"`
+	SavePath string `json:"savePath"`
+	Restored int    `json:"restored"`
+}
+
+// Undo puts things back the way they were: it removes the link at the save
+// path and restores a real folder there holding a copy of the saves.
+//
+// The cloud folder is left completely untouched — the other player is still
+// syncing against it, and their campaign shouldn't end because their friend
+// decided to stop using this app. That also makes Undo safe to reach for
+// when something looks wrong, which is the point: an action a player can
+// reverse is one they'll actually be willing to try.
+func Undo(cfg config.Config) UndoResult {
+	savePath := rememberedSavePath(cfg)
+	if savePath == "" {
+		savePath = paths.DetectSavePath()
+	}
+	if savePath == "" {
+		return UndoResult{Error: "Couldn't find the save folder, so there's nothing to undo."}
+	}
+
+	// Follow the link's own target rather than what config says it should
+	// be: if those two ever disagree, the link is the truth, and copying
+	// from the wrong folder would restore the wrong saves.
+	st, err := linkutil.Inspect(savePath, "")
+	if err != nil {
+		return UndoResult{Error: err.Error(), SavePath: savePath}
+	}
+	if !st.IsLink {
+		return UndoResult{Error: fmt.Sprintf(
+			"%s isn't linked, so there's nothing to undo.", savePath), SavePath: savePath}
+	}
+	linked := st.LinkTarget
+
+	if err := linkutil.Unlink(savePath); err != nil {
+		return UndoResult{Error: fmt.Sprintf("removing the link: %v", err), SavePath: savePath}
+	}
+	if err := os.MkdirAll(savePath, 0o755); err != nil {
+		return UndoResult{Error: fmt.Sprintf("recreating %s: %v", savePath, err), SavePath: savePath}
+	}
+
+	restored, err := linkutil.CopyContents(linked, savePath)
+	if err != nil {
+		return UndoResult{
+			Error: fmt.Sprintf("the link is removed and %s exists again, but copying the saves back failed: %v."+
+				" Your saves are still safe in %s.", savePath, err, linked),
+			SavePath: savePath, Restored: restored,
+		}
+	}
+	return UndoResult{OK: true, SavePath: savePath, Restored: restored}
+}
+
 // RecoverResult is what the Recover view shows: conflict files needing
 // attention, or if there are none, a peek at recent saves so the player
 // can confirm things look right.

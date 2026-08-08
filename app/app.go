@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 
+	"shogun2sync/internal/applog"
 	"shogun2sync/internal/bisync"
 	"shogun2sync/internal/config"
 	"shogun2sync/internal/gdrive"
@@ -122,6 +123,10 @@ type GoogleDriveMirrorStatus struct {
 	Enabled    bool   `json:"enabled"`
 	Active     bool   `json:"active"`
 	LastSync   string `json:"lastSync,omitempty"`
+	// LastError describes the last failed run, empty when the last run was
+	// fine. A sync that quietly stopped working is worse than one that
+	// never started, so this gets shown rather than logged.
+	LastError string `json:"lastError,omitempty"`
 }
 
 func (a *App) GetGoogleDriveMirrorStatus() GoogleDriveMirrorStatus {
@@ -130,7 +135,10 @@ func (a *App) GetGoogleDriveMirrorStatus() GoogleDriveMirrorStatus {
 	}
 	enabled, active := bisync.TimerStatus(a.ctx)
 	last := bisync.LastSyncTime(a.ctx)
-	res := GoogleDriveMirrorStatus{Applicable: true, Enabled: enabled, Active: active}
+	res := GoogleDriveMirrorStatus{
+		Applicable: true, Enabled: enabled, Active: active,
+		LastError: bisync.LastError(a.ctx),
+	}
 	if !last.IsZero() {
 		res.LastSync = last.Format("2006-01-02 15:04:05")
 	}
@@ -198,7 +206,28 @@ func (a *App) RunSetup(cfg config.Config, savePathOverride string) orchestrate.S
 		cfg.SavePath = res.SavePath
 		_ = config.Save(cfg)
 	}
+	applog.Printf("setup: ok=%v alreadySet=%v savePath=%q target=%q err=%q",
+		res.OK, res.AlreadySet, res.SavePath, res.SyncTarget, res.Error)
 	return res
+}
+
+// RunUndo removes the link and restores a normal save folder. See
+// orchestrate.Undo — the cloud folder is deliberately left untouched.
+func (a *App) RunUndo() orchestrate.UndoResult {
+	cfg, _ := config.Load()
+	res := orchestrate.Undo(cfg)
+	applog.Printf("undo: ok=%v restored=%d err=%q", res.OK, res.Restored, res.Error)
+	return res
+}
+
+// GetLogTail returns the end of the log file so a player can copy it into a
+// bug report without going looking for it on disk.
+func (a *App) GetLogTail() string {
+	s, err := applog.Tail(64 << 10)
+	if err != nil {
+		return fmt.Sprintf("Couldn't read the log: %v", err)
+	}
+	return s
 }
 
 func (a *App) GetStatus() orchestrate.StatusResult {

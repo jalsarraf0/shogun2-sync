@@ -17,6 +17,8 @@ import {
   ResolveConflict,
   OpenInFileManager,
   GetGoogleDriveMirrorStatus,
+  RunUndo,
+  GetLogTail,
 } from '../wailsjs/go/main/App';
 
 const app = document.querySelector('#app');
@@ -436,10 +438,11 @@ async function renderStatus() {
     if (m.applicable) {
       mirrorHtml = `
         <div class="status-line">
-          <span class="dot ${m.active ? 'good' : 'bad'}"></span>
+          <span class="dot ${m.active && !m.lastError ? 'good' : 'bad'}"></span>
           Google Drive background sync: ${m.active ? 'running' : 'not running'}
           ${m.lastSync ? `<span class="hint" style="margin-left:8px">last synced ${escapeHtml(m.lastSync)}</span>` : ''}
         </div>
+        ${m.lastError ? `<div class="banner error" style="margin-top:10px">${escapeHtml(m.lastError)}</div>` : ''}
       `;
     }
   }
@@ -462,8 +465,64 @@ async function renderStatus() {
     ` : `
       <div class="banner success">You're good to play. If a desync happens, use Recover below.</div>
     `}
+    <details class="advanced">
+      <summary>Troubleshooting</summary>
+      <p class="sub">
+        <strong>Stop syncing</strong> puts your save folder back to a normal
+        folder with your saves in it. Your friend's copy in the shared folder
+        is left alone, so it won't affect their game.
+      </p>
+      <div class="btn-row">
+        <button class="btn secondary" id="undoBtn">Stop syncing</button>
+        <button class="btn secondary" id="logBtn">Show log</button>
+      </div>
+      <div id="advancedOut"></div>
+    </details>
   `);
   setFooter('status');
+
+  document.getElementById('undoBtn').onclick = () => confirmUndo();
+  document.getElementById('logBtn').onclick = async () => {
+    const text = await GetLogTail();
+    document.getElementById('advancedOut').innerHTML = `
+      <pre class="log" id="logText"></pre>
+      <div class="btn-row"><button class="btn secondary" id="copyLog">Copy log</button></div>
+    `;
+    document.getElementById('logText').textContent = text;
+    document.getElementById('copyLog').onclick = () => {
+      navigator.clipboard?.writeText(text);
+      document.getElementById('copyLog').textContent = 'Copied!';
+    };
+  };
+}
+
+function confirmUndo() {
+  const out = document.getElementById('advancedOut');
+  out.innerHTML = `
+    <div class="banner info">
+      This will replace the link with a normal folder containing a copy of
+      your saves. Nothing is deleted, and the shared folder is untouched.
+    </div>
+    <div class="btn-row">
+      <button class="btn secondary" id="undoCancel">Cancel</button>
+      <button class="btn danger" id="undoConfirm">Yes, stop syncing</button>
+    </div>
+  `;
+  document.getElementById('undoCancel').onclick = () => { out.innerHTML = ''; };
+  document.getElementById('undoConfirm').onclick = async () => {
+    const btn = document.getElementById('undoConfirm');
+    btn.disabled = true;
+    btn.textContent = 'Working…';
+    const res = await RunUndo();
+    if (res.ok) {
+      out.innerHTML = `<div class="banner success">
+        Done — ${res.restored} file${res.restored === 1 ? '' : 's'} restored to
+        <code>${escapeHtml(res.savePath)}</code>. Run Setup again any time to start syncing.
+      </div>`;
+    } else {
+      out.innerHTML = `<div class="banner error">${escapeHtml(res.error)}</div>`;
+    }
+  };
 }
 
 // ---------- Recover ----------
@@ -509,7 +568,13 @@ async function renderRecover() {
     <div class="file-list" id="conflictList">
       ${res.conflicts.map((f, i) => `
         <div class="file-row" data-path="${escapeHtml(f.path)}">
-          <div><div class="name">${escapeHtml(f.name)}</div><div class="when">${fmtTime(f.modified)}</div></div>
+          <div>
+            <div class="name">${escapeHtml(f.name)}</div>
+            <div class="when">
+              ${fmtTime(f.modified)}${f.reason ? ` — ${escapeHtml(f.reason)}` : ''}
+              ${f.original ? `<br>copy of <code>${escapeHtml(f.original)}</code>` : ''}
+            </div>
+          </div>
           <button class="btn danger resolveBtn" data-idx="${i}">Resolve</button>
         </div>
       `).join('')}

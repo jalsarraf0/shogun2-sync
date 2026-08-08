@@ -130,6 +130,85 @@ func TestSetupIgnoresStaleRecordedSavePath(t *testing.T) {
 	}
 }
 
+func TestUndoRestoresARealFolderAndKeepsTheCloudCopy(t *testing.T) {
+	savePath, cloudRoot := setupFakeSave(t)
+	cfg := config.Config{CloudProvider: "dropbox", CloudRoot: cloudRoot, SyncSubfolder: "Shogun2SaveSync"}
+
+	res := Setup(cfg, savePath)
+	if !res.OK {
+		t.Fatalf("Setup failed: %s", res.Error)
+	}
+	cfg.SavePath = res.SavePath
+
+	undo := Undo(cfg)
+	if !undo.OK {
+		t.Fatalf("Undo failed: %s", undo.Error)
+	}
+	if undo.Restored != 1 {
+		t.Errorf("Restored = %d, want 1", undo.Restored)
+	}
+
+	// A real directory again, not a link.
+	info, err := os.Lstat(savePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("expected the save path to be a real folder after Undo")
+	}
+	if _, err := os.Stat(filepath.Join(savePath, "turn090.save")); err != nil {
+		t.Fatalf("expected the save restored locally: %v", err)
+	}
+
+	// The other player is still syncing against the shared folder, so it
+	// must survive one player backing out.
+	if _, err := os.Stat(filepath.Join(SyncTarget(cfg), "turn090.save")); err != nil {
+		t.Fatalf("Undo removed the shared copy: %v", err)
+	}
+
+	if st := Status(cfg); st.LinkedOK {
+		t.Error("Status should no longer report the folder as linked")
+	}
+}
+
+func TestUndoOnAnUnlinkedFolderChangesNothing(t *testing.T) {
+	savePath, cloudRoot := setupFakeSave(t)
+	cfg := config.Config{
+		CloudProvider: "dropbox", CloudRoot: cloudRoot,
+		SyncSubfolder: "Shogun2SaveSync", SavePath: savePath,
+	}
+
+	undo := Undo(cfg)
+	if undo.OK {
+		t.Fatal("expected Undo to refuse when nothing is linked")
+	}
+	if _, err := os.Stat(filepath.Join(savePath, "turn090.save")); err != nil {
+		t.Fatalf("Undo touched an unlinked save folder: %v", err)
+	}
+}
+
+// Setup must be reachable again after an Undo, or a player who backs out
+// once is stuck for good.
+func TestSetupWorksAgainAfterUndo(t *testing.T) {
+	savePath, cloudRoot := setupFakeSave(t)
+	cfg := config.Config{CloudProvider: "dropbox", CloudRoot: cloudRoot, SyncSubfolder: "Shogun2SaveSync"}
+
+	if res := Setup(cfg, savePath); !res.OK {
+		t.Fatalf("Setup failed: %s", res.Error)
+	}
+	cfg.SavePath = savePath
+	if undo := Undo(cfg); !undo.OK {
+		t.Fatalf("Undo failed: %s", undo.Error)
+	}
+	res := Setup(cfg, savePath)
+	if !res.OK {
+		t.Fatalf("Setup after Undo failed: %s", res.Error)
+	}
+	if st := Status(cfg); !st.LinkedOK {
+		t.Errorf("expected a healthy link after re-running Setup, got %+v", st)
+	}
+}
+
 func TestRecoverFindsAndResolvesConflicts(t *testing.T) {
 	savePath, cloudRoot := setupFakeSave(t)
 	cfg := config.Config{CloudProvider: "dropbox", CloudRoot: cloudRoot, SyncSubfolder: "Shogun2SaveSync"}

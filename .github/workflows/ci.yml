@@ -70,6 +70,33 @@ jobs:
         working-directory: app
         run: $(go env GOPATH)/bin/wails build -tags webkit2_41
 
+  # Half of what this app does is Windows-specific — directory junctions,
+  # reparse points, %APPDATA% paths, file:// URLs with drive letters — and
+  # none of it is exercised by cross-compiling on Linux. This job runs the
+  # real test suite on real Windows so those paths are actually verified.
+  test-windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: app/go.sum
+
+      - name: Build frontend
+        run: |
+          npm install --prefix app/frontend
+          npm run build --prefix app/frontend
+
+      - name: Vet
+        working-directory: app
+        run: go vet ./...
+
+      - name: Test
+        working-directory: app
+        run: go test ./...
+
   build-windows-cross:
     runs-on: ubuntu-24.04
     steps:

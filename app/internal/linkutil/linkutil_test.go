@@ -3,6 +3,7 @@ package linkutil
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -126,6 +127,101 @@ func TestMoveContentsHandlesSubdirectories(t *testing.T) {
 	}
 	if _, err := os.Stat(src); !os.IsNotExist(err) {
 		t.Fatalf("expected src removed, stat err = %v", err)
+	}
+}
+
+// Overwriting a save already in the shared folder would destroy the other
+// player's file — the single worst thing setup could do. Both must survive.
+func TestMoveContentsNeverOverwritesAnExistingSave(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	os.MkdirAll(src, 0o755)
+	os.MkdirAll(dst, 0o755)
+
+	if err := os.WriteFile(filepath.Join(src, "turn090.save"), []byte("mine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	theirs := filepath.Join(dst, "turn090.save")
+	if err := os.WriteFile(theirs, []byte("theirs"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := MoveContents(src, dst); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(theirs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "theirs" {
+		t.Fatalf("existing save was overwritten: contents = %q, want %q", got, "theirs")
+	}
+
+	entries, err := os.ReadDir(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected both saves kept, found %d entries", len(entries))
+	}
+
+	// The kept-aside copy must be named so the Recover view's scan finds
+	// it, otherwise the player never learns there are two versions.
+	var found bool
+	for _, e := range entries {
+		if e.Name() != "turn090.save" && strings.Contains(strings.ToLower(e.Name()), "conflict") {
+			found = true
+			b, err := os.ReadFile(filepath.Join(dst, e.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(b) != "mine" {
+				t.Errorf("renamed copy contains %q, want %q", b, "mine")
+			}
+		}
+	}
+	if !found {
+		t.Errorf("renamed copy isn't detectable as a conflict; entries: %v", entries)
+	}
+}
+
+func TestUnlinkLeavesTheTargetAlone(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "cloud")
+	link := filepath.Join(dir, "save")
+	os.MkdirAll(target, 0o755)
+	if err := os.WriteFile(filepath.Join(target, "turn090.save"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Link(link, target); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Unlink(link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Errorf("expected the link to be gone, stat err = %v", err)
+	}
+	// The other player is still syncing against that folder.
+	if _, err := os.Stat(filepath.Join(target, "turn090.save")); err != nil {
+		t.Fatalf("Unlink destroyed the cloud folder's contents: %v", err)
+	}
+}
+
+func TestUnlinkRefusesARealDirectory(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "save")
+	os.MkdirAll(real, 0o755)
+	os.WriteFile(filepath.Join(real, "turn090.save"), []byte("x"), 0o644)
+
+	if err := Unlink(real); err == nil {
+		t.Fatal("expected Unlink to refuse a real directory")
+	}
+	if _, err := os.Stat(filepath.Join(real, "turn090.save")); err != nil {
+		t.Fatalf("Unlink touched a real save folder: %v", err)
 	}
 }
 

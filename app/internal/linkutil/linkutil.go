@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -78,7 +78,7 @@ func MoveContents(src, dst string) error {
 	}
 	for _, e := range entries {
 		from := filepath.Join(src, e.Name())
-		to := filepath.Join(dst, e.Name())
+		to := nonClobberingPath(filepath.Join(dst, e.Name()))
 		if err := os.Rename(from, to); err != nil {
 			if cerr := copyPath(from, to); cerr != nil {
 				return fmt.Errorf("moving %s: rename failed (%v), and copying instead failed: %w", e.Name(), err, cerr)
@@ -89,6 +89,71 @@ func MoveContents(src, dst string) error {
 		}
 	}
 	return os.Remove(src)
+}
+
+// nonClobberingPath returns want, or a renamed variant if something is
+// already there.
+//
+// The shared folder may already hold the other player's save under the same
+// name — os.Rename would overwrite it silently on Linux (and fail outright
+// on Windows), and destroying the other player's save during setup is the
+// worst thing this app could possibly do. Keeping both is always
+// recoverable. "conflict" is in the generated name deliberately: that's
+// what the Recover view scans for, so the pair surfaces as something for
+// the two players to settle, which is exactly what it is.
+func nonClobberingPath(want string) string {
+	if _, err := os.Lstat(want); err != nil {
+		return want
+	}
+	ext := filepath.Ext(want)
+	base := strings.TrimSuffix(want, ext)
+	stamp := time.Now().Format("2006-01-02 150405")
+	for i := 0; ; i++ {
+		candidate := fmt.Sprintf("%s (setup conflict %s)%s", base, stamp, ext)
+		if i > 0 {
+			candidate = fmt.Sprintf("%s (setup conflict %s-%d)%s", base, stamp, i, ext)
+		}
+		if _, err := os.Lstat(candidate); err != nil {
+			return candidate
+		}
+	}
+}
+
+// CopyContents copies every entry from src into dst, leaving src alone,
+// and reports how many entries it copied. Existing files in dst are kept
+// and the incoming copy is renamed, same as MoveContents.
+func CopyContents(src, dst string) (int, error) {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return 0, fmt.Errorf("reading %s: %w", src, err)
+	}
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, e := range entries {
+		to := nonClobberingPath(filepath.Join(dst, e.Name()))
+		if err := copyPath(filepath.Join(src, e.Name()), to); err != nil {
+			return n, fmt.Errorf("copying %s: %w", e.Name(), err)
+		}
+		n++
+	}
+	return n, nil
+}
+
+// Unlink removes the link at savePath without touching whatever it points
+// at. Removing a link must never recurse into the cloud folder and delete
+// the other player's saves, so this deliberately uses os.Remove — which
+// unlinks a symlink and detaches a junction — and never os.RemoveAll.
+func Unlink(savePath string) error {
+	st, err := Inspect(savePath, "")
+	if err != nil {
+		return err
+	}
+	if !st.IsLink {
+		return fmt.Errorf("%s is not a link", savePath)
+	}
+	return os.Remove(savePath)
 }
 
 // copyPath recursively copies src to dst, preserving permissions and
@@ -161,25 +226,19 @@ func Link(savePath, target string) error {
 		return err
 	}
 	if runtime.GOOS == "windows" {
-		if err := createJunction(savePath, target); err == nil {
+		junctionErr := createJunction(savePath, target)
+		if junctionErr == nil {
 			return nil
 		}
-		// Fall back to a real symlink (needs admin or Developer Mode).
-		return os.Symlink(target, savePath)
+		// A symlink is the fallback, but it needs Administrator rights or
+		// Developer Mode, so it usually fails too on a stock account. When
+		// both fail, the junction error is the one worth reading — the
+		// symlink's "a required privilege is not held" would just send
+		// people hunting for the wrong fix.
+		if err := os.Symlink(target, savePath); err != nil {
+			return fmt.Errorf("could not link %s to %s: %w", savePath, target, junctionErr)
+		}
+		return nil
 	}
 	return os.Symlink(target, savePath)
-}
-
-// createJunction shells out to mklink /J, since Go's stdlib has no direct
-// junction API and mklink handles the reparse-point plumbing correctly.
-func createJunction(link, target string) error {
-	if runtime.GOOS != "windows" {
-		return fmt.Errorf("junctions are Windows-only")
-	}
-	cmd := exec.Command("cmd", "/c", "mklink", "/J", link, target)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("mklink /J failed: %w: %s", err, out)
-	}
-	return nil
 }

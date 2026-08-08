@@ -20,6 +20,8 @@ export function GetConfig():Promise<config.Config>;
 
 export function GetGoogleDriveMirrorStatus():Promise<main.GoogleDriveMirrorStatus>;
 
+export function GetLogTail():Promise<string>;
+
 export function GetStatus():Promise<orchestrate.StatusResult>;
 
 export function OpenInFileManager(arg1:string):Promise<void>;
@@ -31,5 +33,7 @@ export function ResolveConflict(arg1:string):Promise<string>;
 export function RunRecover():Promise<orchestrate.RecoverResult>;
 
 export function RunSetup(arg1:config.Config,arg2:string):Promise<orchestrate.SetupResult>;
+
+export function RunUndo():Promise<orchestrate.UndoResult>;
 
 export function SaveConfigCmd(arg1:config.Config):Promise<string>;
