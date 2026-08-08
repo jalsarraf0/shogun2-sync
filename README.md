@@ -1,125 +1,121 @@
-# shogun2-sync
+# Shogun 2 Save Sync
 
 Turns a Shogun 2 multiplayer campaign desync from "campaign is dead" into
-a five-minute hiccup, by keeping both players' save files mirrored through
-a cloud-synced folder instead of manually emailing/Discord-ing save files
-back and forth.
+a five-minute fix, by keeping both players' save files mirrored through a
+cloud folder you already use — instead of manually hunting down a save
+file and sending it over Discord.
 
 **What this does not do:** stop the desync from happening. Shogun 2's
-multiplayer netcode is closed-source and the actual live simulation state
-lives in each player's game process — nothing outside the game can fix
+multiplayer netcode is closed-source and the live simulation state lives
+in each player's own game process — nothing outside the game can prevent
 that. This only removes the friction of recovering from it.
 
-## How it works
+A small native app (Windows + Linux), no command line required.
 
-The game always saves to a fixed local folder. This tool moves that
-folder's contents into a folder inside your cloud-sync client's tree
-(Dropbox/OneDrive/Google Drive), then replaces the original folder with a
-symlink (Linux) or directory junction (Windows) pointing at the new
-location. The game keeps reading/writing the same path as always; the
-cloud client mirrors the real folder to the other player automatically.
+## Download
 
-Both players point their setup at the **same shared folder** (one player
-shares it with the other via their cloud provider's folder-sharing
-feature).
+Grab the latest release for your OS from the
+[Releases page](https://github.com/jalsarraf0/shogun2-sync/releases):
 
-## No command-line needed
+| Platform | File |
+|---|---|
+| Windows | `shogun2sync-windows-amd64.zip` — unzip, run `shogun2sync.exe` |
+| Debian / Ubuntu | `shogun2sync_<version>_amd64.deb` |
+| Fedora / Nobara | `shogun2sync-<version>-1.x86_64.rpm` |
+| Arch | `shogun2sync-<version>-1-x86_64.pkg.tar.zst`, or build the included `PKGBUILD` |
+| Any Linux | `shogun2sync-linux-amd64` — portable binary, just `chmod +x` and run |
+| Source | `shogun2-sync-<version>-src.tar.gz` |
 
-Both setup and recovery are double-click tools — no terminal, no editing
-config files by hand. First run asks two or three plain questions (which
-cloud service, and confirming the folder path); after that it remembers
-and just works.
+No installer required for the Windows build — it's a single portable `.exe`.
 
-## Prerequisites
+## Quick start
 
-- Both players run setup against the **same shared cloud folder** (one
-  player shares it with the other using their cloud provider's normal
-  "share this folder" feature — the same one you'd use to share any
-  folder with a friend).
-- The cloud app itself (Dropbox, OneDrive, or Google Drive) must already
-  be installed and finished its first sync before running setup.
+1. Both players install a cloud sync client (**Dropbox recommended** —
+   simplest and most reliable on both OSes; OneDrive also works;
+   Google Drive works but needs one extra step on Linux, see below) and
+   share one folder between them.
+2. Run Shogun 2 Save Sync. First launch walks you through:
+   - which cloud provider you're using
+   - confirming the shared folder
+   - finding your Shogun 2 save folder (run the game once first if it
+     can't find it — that's what creates the folder)
+3. Both players do this, pointed at the *same* shared folder. That's it —
+   saves now sync automatically.
+4. If a desync happens: open the app's **Recover** tab. It finds the
+   duplicate files the cloud client leaves behind when both players save
+   at the same moment, and gives you a one-click way to resolve them
+   (moved to a recoverable trash folder, never deleted outright).
 
-### Recommended: Dropbox
+### Provider notes
 
-Simplest and most reliable option on both OSes — use this unless you
-have a strong reason not to.
+- **Dropbox** — make sure the shared folder is set to **Local**, not
+  "Online only," or small save-file writes can fail silently.
+- **OneDrive** — turn off **Files On-Demand** for the shared folder
+  ("Always keep on this device"), for the same reason.
+- **Google Drive** — on Windows, switch Google Drive's setting from
+  "Stream files" to **"Mirror files."** On Linux, Google ships no real
+  sync client at all, so the app authorizes against the Drive API
+  directly (native OAuth flow, real browser login) and runs
+  [`rclone`](https://rclone.org) `bisync` on a background timer to
+  maintain a real local mirror — a live network mount would risk the
+  exact write failures a streaming client has. This needs `rclone`
+  installed (pulled in automatically by the `.deb`/`.rpm` packages).
 
-**Windows:** double-click `windows\Setup.bat`. It asks which cloud
-service (pick Dropbox), confirms the folder, and finishes. Done.
+## Reducing how often desyncs happen in the first place
 
-**Linux:** double-click `linux/Setup Shogun2 Sync.desktop` (first time,
-right-click it → Properties → Permissions → check "Allow executing file
-as program," or "Trust and Launch" if your file manager asks). Same
-questions, same result.
+Standing community advice for Shogun 2 MP campaigns, not specific to
+this tool, but worth doing regardless:
 
-⚠️ One setting to check either way: right-click the shared folder in
-Dropbox → make sure it's set to **Local**, not "Online only" — otherwise
-small save files can fail to write correctly.
-
-### OneDrive
-
-Same double-click steps as above, just choose OneDrive when asked.
-
-⚠️ **Important:** right-click the shared folder in OneDrive → **"Always
-keep on this device."** OneDrive's default "Files On-Demand" behavior
-can turn save files into placeholders that aren't actually downloaded,
-which can make the game fail to read or write them correctly.
-
-### Google Drive (more setup work — Dropbox is easier)
-
-**Windows:** Google Drive defaults to a mode that doesn't keep real
-files on your computer, which breaks this. Open Google Drive's settings
-→ **switch to "Mirror files"** (not "Stream files") before running
-Setup.bat.
-
-**Linux:** Google has no real sync app for Linux, so this needs one
-extra one-time step from someone comfortable with a terminal:
-```bash
-rclone config          # create a remote named 'gdrive', one-time login
-./linux/setup-gdrive-rclone.sh gdrive Shogun2SaveSync
-```
-Follow what it prints, then double-click the normal setup launcher.
-
-## When a desync happens
-
-Stop playing immediately — continuing on drifted state compounds it.
-
-Double-click `linux/Recover Shogun2 Sync.desktop` or
-`windows\Recover.bat`. It lists any files that look like sync conflicts
-(both players saved at the same moment) and walks you through, in plain
-language, which one to keep.
-
-## Reducing how often this happens in the first place
-
-These don't come from this tool, they're just the standing community
-advice for Shogun 2 MP campaigns — worth doing regardless:
-
-- Both players use the **same DirectX version** in game settings (9 or
-  11 — pick one).
+- Both players use the **same DirectX version** in game settings.
 - **No mods, no Workshop subscriptions** on either side.
 - **Verify game file integrity** (Steam → Properties → Local Files) on
   both machines.
 - Fully quit the game before handing off whose turn it is, and wait for
-  the cloud client's "up to date" checkmark before the other player
-  launches.
+  the cloud client to show "up to date" before the other player launches.
 
-## Sending this to the other player
+## How it works
 
-Zip the `windows` folder (it's self-contained) and send it to them
-however's easiest — Discord, email, the shared cloud folder itself.
-They extract it anywhere and double-click `Setup.bat`.
+The game always saves to a fixed local folder. Setup moves that folder's
+contents into your cloud-synced tree, then replaces the original with a
+symlink (Linux) or directory junction (Windows, no admin rights needed).
+The game keeps reading and writing the same path it always has; the
+cloud client mirrors the real folder to the other player automatically.
+
+The Google Drive OAuth flow runs entirely in-app: a local Go HTTP server
+handles the loopback callback directly (reusing `rclone`'s own
+already-Google-verified OAuth client, so there's no lengthy app-review
+process), rather than depending on a third-party CLI's interactive flow.
+
+## Building from source
+
+Requires Go 1.25+, Node/npm, and the [Wails v2](https://wails.io) CLI.
+On Fedora/Nobara you'll also need `webkit2gtk4.1-devel` and `gtk3-devel`.
+
+```bash
+cd app
+npm install --prefix frontend
+wails build -tags webkit2_41       # Linux
+wails build -platform windows/amd64 # Windows (cross-compiles cleanly, no mingw needed)
+```
+
+`app/packaging/build-release.sh <version>` builds every release artifact
+(Windows zip, `.deb`, `.rpm`, Arch package, source tarball) into `dist/`.
 
 ## Repo layout
 
 ```
-config.example.json           # reference only; the double-click tools write config.json themselves
-linux/Setup Shogun2 Sync.desktop   # double-click entry point
-linux/Recover Shogun2 Sync.desktop # double-click entry point
-linux/setup.sh                 # does the actual work (called by the .desktop file)
-linux/recover.sh               # does the actual work (called by the .desktop file)
-linux/setup-gdrive-rclone.sh   # Linux-only, Google Drive: maintains a real local Drive mirror
-windows/Setup.bat              # double-click entry point
-windows/Recover.bat            # double-click entry point
-windows/setup.ps1              # does the actual work (called by Setup.bat)
-windows/recover.ps1            # does the actual work (called by Recover.bat)
+app/                    the app (Go backend + Wails webview UI)
+  internal/gdrive/       in-app Google Drive OAuth
+  internal/rcloneutil/   rclone config/remote management
+  internal/bisync/       Linux Google Drive systemd-timer mirror
+  internal/linkutil/     symlink/junction creation
+  internal/conflicts/    cloud-conflict-file scanning
+  internal/orchestrate/  ties setup/status/recover together
+  frontend/               wizard UI (vanilla JS)
+  packaging/              nfpm config, PKGBUILD, release build script
+legacy-scripts/          the original bash/PowerShell scripts this app replaced
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).

@@ -1,0 +1,32 @@
+# nfpm config for the .deb, .rpm, and Arch packages.
+# Build the binary first (`wails build -tags webkit2_41`), then:
+#   nfpm package --config packaging/nfpm.yaml --packager deb
+#   nfpm package --config packaging/nfpm.yaml --packager rpm
+#   nfpm package --config packaging/nfpm.yaml --packager archlinux
+name: shogun2sync
+arch: amd64
+platform: linux
+version: ${VERSION}
+section: games
+priority: optional
+maintainer: shogun2-sync contributors
+description: |
+  Keeps Shogun 2 multiplayer campaign saves mirrored through a shared
+  cloud folder, and gives you a one-click way to spot and resolve the
+  duplicate files a desync leaves behind.
+vendor: shogun2-sync
+homepage: https://github.com/jalsarraf0/shogun2-sync
+license: MIT
+
+depends:
+  - rclone
+
+contents:
+  - src: ./build/bin/shogun2sync
+    dst: /usr/bin/shogun2sync
+    file_info:
+      mode: 0755
+  - src: ./packaging/shogun2sync.desktop
+    dst: /usr/share/applications/shogun2sync.desktop
+  - src: ./build/appicon.png
+    dst: /usr/share/icons/hicolor/512x512/apps/shogun2sync.png

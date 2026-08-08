@@ -1,0 +1,26 @@
+# Maintainer: shogun2-sync contributors
+pkgname=shogun2sync
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Keep Shogun 2 multiplayer campaign saves in sync so a desync is a five-minute fix, not a dead campaign"
+arch=('x86_64')
+url="https://github.com/jalsarraf0/shogun2-sync"
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'rclone')
+makedepends=('go' 'npm')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/jalsarraf0/shogun2-sync/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$srcdir/shogun2-sync-$pkgver/app"
+  npm install --prefix frontend
+  export CGO_ENABLED=1
+  go build -tags webkit2_41 -ldflags "-s -w" -o shogun2sync .
+}
+
+package() {
+  cd "$srcdir/shogun2-sync-$pkgver/app"
+  install -Dm755 shogun2sync "$pkgdir/usr/bin/shogun2sync"
+  install -Dm644 packaging/shogun2sync.desktop "$pkgdir/usr/share/applications/shogun2sync.desktop"
+  install -Dm644 build/appicon.png "$pkgdir/usr/share/icons/hicolor/512x512/apps/shogun2sync.png"
+}
