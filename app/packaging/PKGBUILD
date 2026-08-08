@@ -1,6 +1,6 @@
 # Maintainer: shogun2-sync contributors
 pkgname=shogun2sync
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Keep Shogun 2 multiplayer campaign saves in sync so a desync is a five-minute fix, not a dead campaign"
 arch=('x86_64')
@@ -14,6 +14,7 @@ sha256sums=('SKIP')
 build() {
   cd "$srcdir/shogun2-sync-$pkgver/app"
   npm install --prefix frontend
+  npm run build --prefix frontend
   export CGO_ENABLED=1
   go build -tags webkit2_41 -ldflags "-s -w" -o shogun2sync .
 }
