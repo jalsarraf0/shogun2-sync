@@ -67,7 +67,12 @@ echo "==> Shipping the PKGBUILD"
 cp "$SCRIPT_DIR/PKGBUILD" "$DIST_DIR/PKGBUILD"
 
 echo "==> Writing checksums"
-( cd "$DIST_DIR" && sha256sum -- * > SHA256SUMS )
+# SHA256SUMS is excluded by name: the redirection creates it before find
+# runs, so it would otherwise list a checksum of its own empty self and
+# fail `sha256sum -c`.
+( cd "$DIST_DIR" \
+  && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\n' \
+  | sort | xargs sha256sum -- > SHA256SUMS )
 
 echo "==> Done. Artifacts in $DIST_DIR:"
 ls -la "$DIST_DIR"
