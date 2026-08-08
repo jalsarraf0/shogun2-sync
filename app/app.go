@@ -92,7 +92,11 @@ func (a *App) AuthorizeGoogleDrive(rootFolderID, subfolder string) GoogleDriveAu
 		}
 	}
 
-	if bisync.Available() {
+	if bisync.Available() && subfolder != "" {
+		// subfolder is never actually empty via the wizard (it defaults to
+		// "Shogun2SaveSync"), but this guard matters: without it, an empty
+		// subfolder would make bisync mirror the user's entire Drive root,
+		// not just a game-saves folder.
 		localDir := paths.DefaultCloudRoot("googledrive")
 		if err := bisync.EnsureMirror(a.ctx, remoteName, subfolder, localDir); err != nil {
 			return GoogleDriveAuthResult{OK: false, Error: fmt.Sprintf("setting up local sync mirror: %v", err)}
