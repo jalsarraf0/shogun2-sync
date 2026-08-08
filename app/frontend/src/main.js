@@ -306,12 +306,22 @@ async function renderSavePath() {
       <div class="card"><code>${escapeHtml(detected)}</code></div>
     ` : `
       <div class="banner info">
-        Couldn't find it yet — that's normal if you haven't run Shogun 2
-        on this computer before. Run the game once (any campaign, just to
-        create the save folder), then come back and click Detect again.
+        Couldn't find it automatically — that's normal if you haven't run
+        Shogun 2 on this computer before. Run the game once (any
+        campaign, just to create the save folder), then click Detect
+        again. If you know the path yourself (e.g. a non-default Steam
+        library location), you can type it in directly below instead.
         Expected location:
       </div>
       <div class="card"><code>${escapeHtml(expected || '(unknown)')}</code></div>
+      <div class="field">
+        <label>Save folder path (optional manual override)</label>
+        <input type="text" id="manualPath" placeholder="${escapeHtml(expected || '')}" />
+        <div class="hint" id="manualPathHint"></div>
+      </div>
+      <div class="btn-row">
+        <button class="btn secondary" id="browseSave">Browse…</button>
+      </div>
     `}
     <div class="btn-row">
       <button class="btn secondary" id="back">Back</button>
@@ -323,6 +333,36 @@ async function renderSavePath() {
   document.getElementById('back').onclick = () => (draft.provider === 'googledrive' ? renderGoogleDriveSetup() : renderCloudFolder());
   document.getElementById('redetect').onclick = renderSavePath;
   document.getElementById('next').onclick = runSetupAndFinish;
+
+  if (!detected) {
+    const manualInput = document.getElementById('manualPath');
+    const hint = document.getElementById('manualPathHint');
+    const nextBtn = document.getElementById('next');
+
+    const checkManual = async () => {
+      const val = manualInput.value.trim();
+      if (!val) {
+        hint.textContent = '';
+        nextBtn.disabled = true;
+        draft.savePath = '';
+        return;
+      }
+      const ok = await PathExists(val);
+      hint.textContent = ok ? '✓ Found' : '⚠ That folder doesn\'t exist.';
+      hint.style.color = ok ? 'var(--good)' : 'var(--bad)';
+      nextBtn.disabled = !ok;
+      draft.savePath = ok ? val : '';
+    };
+    manualInput.oninput = checkManual;
+
+    document.getElementById('browseSave').onclick = async () => {
+      const dir = await BrowseForFolder('Choose your Shogun 2 save_games_multiplayer folder');
+      if (dir) {
+        manualInput.value = dir;
+        checkManual();
+      }
+    };
+  }
 }
 
 async function runSetupAndFinish() {
