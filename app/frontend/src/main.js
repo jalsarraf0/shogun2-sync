@@ -70,6 +70,15 @@ async function boot() {
   shell('<p class="sub">Loading…</p>');
   const exists = await ConfigExists();
   if (exists) {
+    // Seed the wizard from the saved config, so re-running Setup keeps a
+    // manually-entered save path instead of asking for it again.
+    const cfg = await GetConfig();
+    draft = {
+      provider: cfg.cloud_provider || '',
+      cloudRoot: cfg.cloud_root || '',
+      syncSubfolder: cfg.sync_subfolder || 'Shogun2SaveSync',
+      savePath: cfg.save_path || '',
+    };
     renderStatus();
   } else {
     renderWelcome();
@@ -297,7 +306,8 @@ function renderGoogleDriveSetup() {
 async function renderSavePath() {
   const detected = await DetectSavePath();
   const expected = detected || (await ExpectedSavePath());
-  draft.savePath = detected || '';
+  const remembered = draft.savePath && (await PathExists(draft.savePath)) ? draft.savePath : '';
+  draft.savePath = detected || remembered;
 
   shell(`
     <h2>Shogun 2 save folder</h2>
@@ -316,7 +326,7 @@ async function renderSavePath() {
       <div class="card"><code>${escapeHtml(expected || '(unknown)')}</code></div>
       <div class="field">
         <label>Save folder path (optional manual override)</label>
-        <input type="text" id="manualPath" placeholder="${escapeHtml(expected || '')}" />
+        <input type="text" id="manualPath" value="${escapeHtml(remembered)}" placeholder="${escapeHtml(expected || '')}" />
         <div class="hint" id="manualPathHint"></div>
       </div>
       <div class="btn-row">
@@ -326,7 +336,7 @@ async function renderSavePath() {
     <div class="btn-row">
       <button class="btn secondary" id="back">Back</button>
       <button class="btn secondary" id="redetect">Detect again</button>
-      <button class="btn" id="next" ${detected ? '' : 'disabled'}>Continue</button>
+      <button class="btn" id="next" ${draft.savePath ? '' : 'disabled'}>Continue</button>
     </div>
   `);
 
@@ -371,6 +381,7 @@ async function runSetupAndFinish() {
     cloud_provider: draft.provider,
     cloud_root: draft.cloudRoot,
     sync_subfolder: draft.syncSubfolder,
+    save_path: draft.savePath || '',
   };
   const saveErr = await SaveConfigCmd(cfg);
   if (saveErr) {
@@ -524,9 +535,11 @@ async function renderRecover() {
     };
   });
 
+  // Pass the file itself — the backend opens its containing folder, so we
+  // don't have to guess which separator this OS uses.
   const first = res.conflicts[0];
   document.getElementById('openFolder').onclick = () => {
-    OpenInFileManager(first.path.substring(0, first.path.lastIndexOf('/')));
+    OpenInFileManager(first.path);
   };
 
   setFooter('recover');

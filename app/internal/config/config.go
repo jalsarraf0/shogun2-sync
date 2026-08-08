@@ -11,8 +11,8 @@ import (
 
 type Config struct {
 	CloudProvider string `json:"cloud_provider"` // "dropbox" | "onedrive" | "googledrive"
-	CloudRoot     string `json:"cloud_root"`      // folder the cloud client syncs to disk
-	SyncSubfolder string `json:"sync_subfolder"`  // subfolder inside CloudRoot dedicated to this app
+	CloudRoot     string `json:"cloud_root"`     // folder the cloud client syncs to disk
+	SyncSubfolder string `json:"sync_subfolder"` // subfolder inside CloudRoot dedicated to this app
 	SavePath      string `json:"save_path,omitempty"`
 }
 

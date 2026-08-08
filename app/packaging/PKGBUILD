@@ -1,6 +1,6 @@
 # Maintainer: shogun2-sync contributors
 pkgname=shogun2sync
-pkgver=0.1.2
+pkgver=0.1.3
 pkgrel=1
 pkgdesc="Keep Shogun 2 multiplayer campaign saves in sync so a desync is a five-minute fix, not a dead campaign"
 arch=('x86_64')

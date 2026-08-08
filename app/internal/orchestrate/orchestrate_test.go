@@ -71,6 +71,65 @@ func TestSetupRejectsMissingCloudRoot(t *testing.T) {
 	}
 }
 
+// A player who typed in a non-default save path can't be helped by
+// auto-detection afterwards either — Status has to trust the recorded path,
+// or it reports a working setup as broken on every later launch.
+func TestStatusUsesRecordedSavePath(t *testing.T) {
+	savePath, cloudRoot := setupFakeSave(t)
+	cfg := config.Config{CloudProvider: "dropbox", CloudRoot: cloudRoot, SyncSubfolder: "Shogun2SaveSync"}
+
+	res := Setup(cfg, savePath)
+	if !res.OK {
+		t.Fatalf("Setup failed: %s", res.Error)
+	}
+	cfg.SavePath = res.SavePath
+
+	st := Status(cfg)
+	if st.SavePath != savePath {
+		t.Errorf("Status().SavePath = %q, want %q", st.SavePath, savePath)
+	}
+	if !st.Linked || !st.LinkedOK {
+		t.Errorf("expected Status to see a healthy link, got %+v", st)
+	}
+}
+
+// The same recorded path also lets a re-run of Setup skip straight to
+// "already set up" instead of failing to find the folder again.
+func TestSetupFallsBackToRecordedSavePath(t *testing.T) {
+	savePath, cloudRoot := setupFakeSave(t)
+	cfg := config.Config{CloudProvider: "dropbox", CloudRoot: cloudRoot, SyncSubfolder: "Shogun2SaveSync"}
+
+	if res := Setup(cfg, savePath); !res.OK {
+		t.Fatalf("first Setup failed: %s", res.Error)
+	}
+	cfg.SavePath = savePath
+
+	res := Setup(cfg, "") // no override this time
+	if !res.OK || !res.AlreadySet {
+		t.Fatalf("expected AlreadySet using the recorded path, got %+v", res)
+	}
+}
+
+// A recorded path that no longer exists must not be used: falling through
+// to detection is right, and linking into a stale location would be wrong.
+func TestSetupIgnoresStaleRecordedSavePath(t *testing.T) {
+	savePath, cloudRoot := setupFakeSave(t)
+	cfg := config.Config{
+		CloudProvider: "dropbox",
+		CloudRoot:     cloudRoot,
+		SyncSubfolder: "Shogun2SaveSync",
+		SavePath:      filepath.Join(t.TempDir(), "gone"),
+	}
+
+	res := Setup(cfg, savePath)
+	if !res.OK {
+		t.Fatalf("Setup failed: %s", res.Error)
+	}
+	if res.SavePath != savePath {
+		t.Errorf("SavePath = %q, want the override %q", res.SavePath, savePath)
+	}
+}
+
 func TestRecoverFindsAndResolvesConflicts(t *testing.T) {
 	savePath, cloudRoot := setupFakeSave(t)
 	cfg := config.Config{CloudProvider: "dropbox", CloudRoot: cloudRoot, SyncSubfolder: "Shogun2SaveSync"}

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestInspectOnMissingPath(t *testing.T) {
@@ -56,6 +57,75 @@ func TestInspectDetectsWrongTarget(t *testing.T) {
 	}
 	if !st.IsLink || st.MatchesTarget {
 		t.Fatalf("expected link NOT matching a different target, got %+v", st)
+	}
+}
+
+// copyPath is what MoveContents falls back to when the save folder and the
+// cloud folder are on different drives and os.Rename can't cross between
+// them. Exercised directly, since a test can't conjure a second filesystem.
+func TestCopyPathRecursesAndPreservesModTimes(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+
+	if err := os.MkdirAll(filepath.Join(src, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inner := filepath.Join(src, "sub", "turn090.save")
+	if err := os.WriteFile(inner, []byte("save data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-72 * time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(inner, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyPath(src, dst); err != nil {
+		t.Fatal(err)
+	}
+
+	copied := filepath.Join(dst, "sub", "turn090.save")
+	data, err := os.ReadFile(copied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "save data" {
+		t.Fatalf("contents = %q, want %q", data, "save data")
+	}
+
+	info, err := os.Stat(copied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Recover ranks saves by mtime, so stamping copies with "now" would
+	// scramble exactly the ordering a desyncing player needs.
+	if !info.ModTime().Truncate(time.Second).Equal(old) {
+		t.Errorf("mtime = %v, want %v", info.ModTime(), old)
+	}
+}
+
+func TestMoveContentsHandlesSubdirectories(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	if err := os.MkdirAll(filepath.Join(src, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "nested", "a.save"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := MoveContents(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "nested", "a.save")); err != nil {
+		t.Fatalf("expected nested file moved: %v", err)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Fatalf("expected src removed, stat err = %v", err)
 	}
 }
 

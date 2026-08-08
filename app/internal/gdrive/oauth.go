@@ -40,8 +40,8 @@ const (
 	rcloneClientID              = "202264815644.apps.googleusercontent.com"
 	rcloneEncryptedClientSecret = "eX8GpZTVx3vxMWVkuuBdDWmAUE6rGhTwVrvG9GhllYccSdj2-mvHVg"
 
-	driveScope   = "https://www.googleapis.com/auth/drive"
-	authTimeout  = 5 * time.Minute
+	driveScope  = "https://www.googleapis.com/auth/drive"
+	authTimeout = 5 * time.Minute
 )
 
 // obscureKey is rclone's fixed AES-CTR key for its "obscure" scheme

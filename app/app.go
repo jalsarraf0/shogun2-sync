@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	goruntime "runtime"
 
 	"shogun2sync/internal/bisync"
@@ -187,7 +189,16 @@ func (a *App) BrowseForFolder(title string) string {
 // ---- Setup / Status / Recover ----
 
 func (a *App) RunSetup(cfg config.Config, savePathOverride string) orchestrate.SetupResult {
-	return orchestrate.Setup(cfg, savePathOverride)
+	res := orchestrate.Setup(cfg, savePathOverride)
+	// Record where the save folder actually turned out to be. Once it's a
+	// symlink into a non-default Steam library, auto-detection can't
+	// rediscover it, so without this the Status view would call a working
+	// setup broken from the next launch onwards.
+	if res.OK && res.SavePath != "" && cfg.SavePath != res.SavePath {
+		cfg.SavePath = res.SavePath
+		_ = config.Save(cfg)
+	}
+	return res
 }
 
 func (a *App) GetStatus() orchestrate.StatusResult {
@@ -209,8 +220,18 @@ func (a *App) ResolveConflict(path string) string {
 	return ""
 }
 
-// OpenInFileManager opens path in the OS's native file browser, for
-// players who'd rather look at the folder themselves.
+// OpenInFileManager opens the folder containing path in the OS's native
+// file browser, for players who'd rather look at the folder themselves.
+// Passing a file is fine — the folder holding it is what opens, which
+// spares the caller from having to split the path (and getting the
+// separator wrong on one of the two platforms).
 func (a *App) OpenInFileManager(path string) {
-	runtime.BrowserOpenURL(a.ctx, "file://"+path)
+	if path == "" {
+		return
+	}
+	dir := path
+	if info, err := os.Stat(path); err != nil || !info.IsDir() {
+		dir = filepath.Dir(path)
+	}
+	runtime.BrowserOpenURL(a.ctx, paths.FileURL(dir))
 }

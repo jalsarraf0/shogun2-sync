@@ -17,6 +17,15 @@ jobs:
           go-version: "1.25"
           cache-dependency-path: app/go.sum
 
+      # Catches version drift between the .exe metadata and the Arch package
+      # on the PR that introduces it, rather than at release time.
+      - name: Check version consistency
+        run: |
+          wails_version="$(sed -n 's/.*"productVersion"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' app/wails.json)"
+          pkgbuild_version="$(sed -n 's/^pkgver=\(.*\)$/\1/p' app/packaging/PKGBUILD)"
+          echo "wails.json=$wails_version PKGBUILD=$pkgbuild_version"
+          [ "$wails_version" = "$pkgbuild_version" ]
+
       - name: Install WebKitGTK/GTK build deps
         run: |
           sudo apt-get update
@@ -29,13 +38,30 @@ jobs:
           npm install --prefix app/frontend
           npm run build --prefix app/frontend
 
+      - name: Check formatting
+        working-directory: app
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
       - name: Vet
         working-directory: app
         run: go vet ./...
 
+      # go vet on Linux never compiles the //go:build windows files, so a
+      # break in the junction/reparse-point code would otherwise only show
+      # up at release time.
+      - name: Vet (Windows build tags)
+        working-directory: app
+        run: GOOS=windows GOARCH=amd64 go vet ./...
+
       - name: Test
         working-directory: app
-        run: go test ./...
+        run: go test -race ./...
 
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest

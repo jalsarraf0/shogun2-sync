@@ -4,24 +4,69 @@
 package paths
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strings"
 )
 
-// steamCompatDataCandidates are the places a Proton prefix for Shogun 2
-// (Steam appid 34330) can live on Linux, depending on how Steam itself was
-// installed (native package, ~/.local/share, or Flatpak).
-func steamCompatDataCandidates(home string) []string {
-	const appID = "34330"
-	roots := []string{
+// shogun2AppID is Shogun 2's Steam application ID, which names its Proton
+// prefix directory.
+const shogun2AppID = "34330"
+
+// steamInstallRoots are the places Steam itself can be installed on Linux,
+// depending on how it was packaged (native package, ~/.local/share, or
+// Flatpak).
+func steamInstallRoots(home string) []string {
+	return []string{
 		filepath.Join(home, ".steam", "steam"),
+		filepath.Join(home, ".steam", "root"),
 		filepath.Join(home, ".local", "share", "Steam"),
 		filepath.Join(home, ".var", "app", "com.valvesoftware.Steam", ".steam", "steam"),
+		filepath.Join(home, ".var", "app", "com.valvesoftware.Steam", "data", "Steam"),
 	}
+}
+
+// libraryPathRe pulls the "path" values out of steamapps/libraryfolders.vdf.
+var libraryPathRe = regexp.MustCompile(`(?m)^\s*"path"\s+"(.*)"\s*$`)
+
+// steamLibraryRoots returns every Steam library directory on this machine:
+// the roots Steam installs itself into, plus any extra library folders the
+// user added elsewhere. Reading libraryfolders.vdf matters because a large
+// Steam library usually lives on a second drive, and a game installed there
+// keeps its Proton prefix — and therefore its save folder — on that drive
+// too, where none of the default paths would ever find it.
+func steamLibraryRoots(home string) []string {
 	var out []string
-	for _, root := range roots {
-		out = append(out, filepath.Join(root, "steamapps", "compatdata", appID,
+	seen := make(map[string]bool)
+	add := func(p string) {
+		if p != "" && !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	for _, root := range steamInstallRoots(home) {
+		add(root)
+		data, err := os.ReadFile(filepath.Join(root, "steamapps", "libraryfolders.vdf"))
+		if err != nil {
+			continue
+		}
+		for _, m := range libraryPathRe.FindAllStringSubmatch(string(data), -1) {
+			// VDF escapes backslashes; harmless to undo on Linux paths.
+			add(strings.ReplaceAll(m[1], `\\`, `\`))
+		}
+	}
+	return out
+}
+
+// steamCompatDataCandidates are the places a Proton prefix for Shogun 2 can
+// live on Linux, one per known Steam library.
+func steamCompatDataCandidates(home string) []string {
+	var out []string
+	for _, root := range steamLibraryRoots(home) {
+		out = append(out, filepath.Join(root, "steamapps", "compatdata", shogun2AppID,
 			"pfx", "drive_c", "users", "steamuser", "AppData", "Roaming",
 			"The Creative Assembly", "Shogun2", "save_games_multiplayer"))
 	}
@@ -128,4 +173,28 @@ func ExpandHome(p string) string {
 func Exists(p string) bool {
 	info, err := os.Stat(p)
 	return err == nil && info.IsDir()
+}
+
+// FileURL converts a local filesystem path into a file:// URL suitable for
+// handing to the OS's default handler.
+//
+// Concatenating "file://" onto a path is wrong on Windows: a drive-letter
+// path needs a third slash and forward separators
+// ("file:///C:/Users/..."), otherwise the drive letter is parsed as the
+// URL's host and nothing opens. Spaces and other reserved characters need
+// escaping on every platform — and the Shogun 2 save path always contains
+// one, in "The Creative Assembly".
+func FileURL(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		abs = p
+	}
+	if runtime.GOOS == "windows" {
+		abs = filepath.ToSlash(abs)
+		if !strings.HasPrefix(abs, "/") {
+			abs = "/" + abs
+		}
+	}
+	u := url.URL{Scheme: "file", Path: abs}
+	return u.String()
 }

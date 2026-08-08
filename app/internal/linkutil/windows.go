@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	fsctlGetReparsePoint    = 0x900A8
-	ioReparseTagMountPoint  = 0xA0000003
-	maxReparseBufferSize    = 16 * 1024
+	fsctlGetReparsePoint   = 0x900A8
+	ioReparseTagMountPoint = 0xA0000003
+	maxReparseBufferSize   = 16 * 1024
 )
 
 // junctionTarget reads the reparse point at path, if any, and returns its

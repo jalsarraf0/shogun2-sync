@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"shogun2sync/internal/conflicts"
 	"shogun2sync/internal/config"
+	"shogun2sync/internal/conflicts"
 	"shogun2sync/internal/linkutil"
 	"shogun2sync/internal/paths"
 )
@@ -20,12 +20,37 @@ func SyncTarget(cfg config.Config) string {
 	return filepath.Join(root, cfg.SyncSubfolder)
 }
 
+// present reports whether anything at all exists at p — including a
+// symlink, which os.Stat would follow and Exists would miss if it dangled.
+func present(p string) bool {
+	if p == "" {
+		return false
+	}
+	_, err := os.Lstat(p)
+	return err == nil
+}
+
+// rememberedSavePath returns the save folder recorded by a previous
+// successful setup, if it's still there.
+//
+// This takes priority over auto-detection because a player who pointed us
+// at a non-default Steam library is a player DetectSavePath couldn't help
+// in the first place — without this, every later Status check would look
+// somewhere else and report a perfectly working setup as broken.
+func rememberedSavePath(cfg config.Config) string {
+	p := paths.ExpandHome(cfg.SavePath)
+	if !present(p) {
+		return ""
+	}
+	return p
+}
+
 type SetupResult struct {
-	OK          bool   `json:"ok"`
-	Error       string `json:"error,omitempty"`
-	AlreadySet  bool   `json:"alreadySet"`
-	SavePath    string `json:"savePath"`
-	SyncTarget  string `json:"syncTarget"`
+	OK         bool   `json:"ok"`
+	Error      string `json:"error,omitempty"`
+	AlreadySet bool   `json:"alreadySet"`
+	SavePath   string `json:"savePath"`
+	SyncTarget string `json:"syncTarget"`
 }
 
 // Setup links savePath (the game's real save folder) into the cloud-synced
@@ -39,6 +64,9 @@ func Setup(cfg config.Config, savePathOverride string) SetupResult {
 	}
 
 	savePath := savePathOverride
+	if savePath == "" {
+		savePath = rememberedSavePath(cfg)
+	}
 	if savePath == "" {
 		savePath = paths.DetectSavePath()
 	}
@@ -90,7 +118,10 @@ type StatusResult struct {
 }
 
 func Status(cfg config.Config) StatusResult {
-	savePath := paths.DetectSavePath()
+	savePath := rememberedSavePath(cfg)
+	if savePath == "" {
+		savePath = paths.DetectSavePath()
+	}
 	if savePath == "" {
 		savePath = paths.ExpectedSavePath()
 	}
@@ -110,10 +141,10 @@ func Status(cfg config.Config) StatusResult {
 // attention, or if there are none, a peek at recent saves so the player
 // can confirm things look right.
 type RecoverResult struct {
-	OK        bool               `json:"ok"`
-	Error     string             `json:"error,omitempty"`
-	Conflicts []conflicts.File   `json:"conflicts"`
-	Recent    []conflicts.File   `json:"recent,omitempty"`
+	OK        bool             `json:"ok"`
+	Error     string           `json:"error,omitempty"`
+	Conflicts []conflicts.File `json:"conflicts"`
+	Recent    []conflicts.File `json:"recent,omitempty"`
 }
 
 func Recover(cfg config.Config) RecoverResult {
