@@ -48,6 +48,7 @@ export namespace main {
 	    ok: boolean;
 	    error?: string;
 	    account?: string;
+	    shareLink?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new GoogleDriveAuthResult(source);
@@ -58,6 +59,7 @@ export namespace main {
 	        this.ok = source["ok"];
 	        this.error = source["error"];
 	        this.account = source["account"];
+	        this.shareLink = source["shareLink"];
 	    }
 	}
 	export class GoogleDriveMirrorStatus {

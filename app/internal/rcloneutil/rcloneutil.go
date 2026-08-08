@@ -50,8 +50,12 @@ func RemoteExists(ctx context.Context, name string) (bool, error) {
 }
 
 // ConfigureGoogleDriveRemote creates or updates a Google Drive remote with
-// the given name, scoping it to rootFolderID and attaching tokenJSON (from
-// gdrive.Authorize) directly, so no interactive rclone auth step ever runs.
+// the given name and attaches tokenJSON (from gdrive.Authorize) directly,
+// so no interactive rclone auth step ever runs.
+//
+// rootFolderID may be empty: that's the "I own this Drive and I'm the one
+// sharing it" case, where there's no shared folder to scope into — the
+// remote just points at the user's own "My Drive" root as normal.
 func ConfigureGoogleDriveRemote(ctx context.Context, name, rootFolderID, tokenJSON string) error {
 	if !Installed() {
 		return ErrNotInstalled
@@ -63,7 +67,6 @@ func ConfigureGoogleDriveRemote(ctx context.Context, name, rootFolderID, tokenJS
 	args := []string{
 		"config", "create", name, "drive",
 		"scope=drive",
-		"root_folder_id=" + rootFolderID,
 		"token=" + tokenJSON,
 		"config_is_local=false",
 		"--non-interactive",
@@ -72,9 +75,15 @@ func ConfigureGoogleDriveRemote(ctx context.Context, name, rootFolderID, tokenJS
 		args = []string{
 			"config", "update", name,
 			"scope", "drive",
-			"root_folder_id", rootFolderID,
 			"token", tokenJSON,
 			"--non-interactive",
+		}
+	}
+	if rootFolderID != "" {
+		if exists {
+			args = append(args, "root_folder_id", rootFolderID)
+		} else {
+			args = append(args, "root_folder_id="+rootFolderID)
 		}
 	}
 	_, err = run(ctx, args...)
@@ -100,4 +109,18 @@ func VerifyAccess(ctx context.Context, remoteName string) error {
 	}
 	_, err := run(ctx, "lsd", remoteName+":", "--max-depth", "1")
 	return err
+}
+
+// ShareableLink returns a Drive share link for remoteName:subfolder, for
+// the "I own this Drive" flow — the host needs something to actually send
+// their friend after creating the sync folder.
+func ShareableLink(ctx context.Context, remoteName, subfolder string) (string, error) {
+	if !Installed() {
+		return "", ErrNotInstalled
+	}
+	out, err := run(ctx, "link", remoteName+":"+subfolder)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
 }

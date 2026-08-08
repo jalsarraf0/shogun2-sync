@@ -194,19 +194,34 @@ function extractFolderId(input) {
 }
 
 function renderGoogleDriveSetup() {
+  // Default to "I have a link" the first time; remember the choice on draft.
+  if (draft.gdriveRole === undefined) draft.gdriveRole = 'receiver';
+
   shell(`
     <h2>Connect Google Drive</h2>
     <p class="sub">
-      Paste the link your friend shared with you. We'll open your browser to
-      log in — that's the standard, safest way to do this (the same
-      pattern used by tools like the GitHub CLI and Google's own gcloud).
+      We'll open your browser to log in — that's the standard, safest way
+      to do this (the same pattern used by tools like the GitHub CLI and
+      Google's own gcloud).
     </p>
-    <div class="field">
+    <div class="choice-list" style="margin-bottom:20px">
+      <button class="choice ${draft.gdriveRole === 'receiver' ? 'selected' : ''}" data-role="receiver">
+        <span class="icon">📥</span>
+        <span><div class="label">A friend shared a folder with me</div>
+        <div class="desc">You have a link they sent you.</div></span>
+      </button>
+      <button class="choice ${draft.gdriveRole === 'host' ? 'selected' : ''}" data-role="host">
+        <span class="icon">📤</span>
+        <span><div class="label">I'm sharing my own Drive</div>
+        <div class="desc">No link needed — we'll create the folder and give you a link to send.</div></span>
+      </button>
+    </div>
+    <div class="field" id="folderLinkField" style="${draft.gdriveRole === 'host' ? 'display:none' : ''}">
       <label>Shared folder link or ID</label>
       <input type="text" id="folderLink" placeholder="https://drive.google.com/drive/folders/..." />
     </div>
     <div class="field">
-      <label>Sync folder name (created inside it)</label>
+      <label>Sync folder name${draft.gdriveRole === 'host' ? ' (created in your Drive)' : ' (created inside it)'}</label>
       <input type="text" id="subfolder" value="${escapeHtml(draft.syncSubfolder)}" />
     </div>
     <div id="authArea">
@@ -218,12 +233,20 @@ function renderGoogleDriveSetup() {
     <div id="authStatus"></div>
   `);
 
+  document.querySelectorAll('.choice[data-role]').forEach((el) => {
+    el.onclick = () => {
+      draft.gdriveRole = el.dataset.role;
+      renderGoogleDriveSetup();
+    };
+  });
+
   document.getElementById('back').onclick = renderProvider;
   document.getElementById('authBtn').onclick = async () => {
-    const link = document.getElementById('folderLink').value;
-    const folderId = extractFolderId(link);
+    const isHost = draft.gdriveRole === 'host';
+    const link = isHost ? '' : document.getElementById('folderLink').value;
+    const folderId = isHost ? '' : extractFolderId(link);
     const subfolder = document.getElementById('subfolder').value || 'Shogun2SaveSync';
-    if (!folderId) {
+    if (!isHost && !folderId) {
       document.getElementById('authStatus').innerHTML = '<div class="banner error">Paste the folder link first.</div>';
       return;
     }
@@ -240,8 +263,24 @@ function renderGoogleDriveSetup() {
       if (res.ok) {
         draft.syncSubfolder = subfolder;
         draft.cloudRoot = await DefaultCloudRoot('googledrive');
-        statusEl.innerHTML = '<div class="banner success">Connected. Continuing…</div>';
-        setTimeout(renderSavePath, 600);
+        if (res.shareLink) {
+          statusEl.innerHTML = `
+            <div class="banner success">Connected! Send this link to your friend so they can set up too:</div>
+            <div class="card"><code id="shareLinkText">${escapeHtml(res.shareLink)}</code></div>
+            <div class="btn-row">
+              <button class="btn secondary" id="copyLink">Copy link</button>
+              <button class="btn" id="continueBtn">Continue</button>
+            </div>
+          `;
+          document.getElementById('copyLink').onclick = () => {
+            navigator.clipboard?.writeText(res.shareLink);
+            document.getElementById('copyLink').textContent = 'Copied!';
+          };
+          document.getElementById('continueBtn').onclick = renderSavePath;
+        } else {
+          statusEl.innerHTML = '<div class="banner success">Connected. Continuing…</div>';
+          setTimeout(renderSavePath, 600);
+        }
       } else {
         statusEl.innerHTML = `<div class="banner error">${escapeHtml(res.error || 'Something went wrong.')}</div>`;
         document.getElementById('authBtn').disabled = false;

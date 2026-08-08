@@ -53,14 +53,20 @@ func (a *App) startup(ctx context.Context) {
 // GoogleDriveAuthResult is what the frontend gets back after a successful
 // Google Drive authorization.
 type GoogleDriveAuthResult struct {
-	OK      bool   `json:"ok"`
-	Error   string `json:"error,omitempty"`
-	Account string `json:"account,omitempty"`
+	OK        bool   `json:"ok"`
+	Error     string `json:"error,omitempty"`
+	Account   string `json:"account,omitempty"`
+	ShareLink string `json:"shareLink,omitempty"` // set when rootFolderID was empty (host flow)
 }
 
 // AuthorizeGoogleDrive runs the OAuth loopback flow (see internal/gdrive),
 // then writes the resulting token into an rclone remote named "gdrive"
-// scoped to rootFolderID, and creates the sync subfolder inside it.
+// and creates the sync subfolder inside it.
+//
+// rootFolderID is the folder ID from a link a friend shared with you.
+// Leave it empty if you're the one whose Drive is being shared — the
+// subfolder gets created in your own "My Drive" root instead, and a
+// shareable link for it comes back in the result so you can send it on.
 func (a *App) AuthorizeGoogleDrive(rootFolderID, subfolder string) GoogleDriveAuthResult {
 	if !rcloneutil.Installed() {
 		return GoogleDriveAuthResult{OK: false, Error: "rclone is not installed"}
@@ -93,7 +99,13 @@ func (a *App) AuthorizeGoogleDrive(rootFolderID, subfolder string) GoogleDriveAu
 		}
 	}
 
-	return GoogleDriveAuthResult{OK: true}
+	res := GoogleDriveAuthResult{OK: true}
+	if rootFolderID == "" && subfolder != "" {
+		if link, err := rcloneutil.ShareableLink(a.ctx, remoteName, subfolder); err == nil {
+			res.ShareLink = link
+		}
+	}
+	return res
 }
 
 // GoogleDriveMirrorStatus reports the Linux bisync timer's state, for the
