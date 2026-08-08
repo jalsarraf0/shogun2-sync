@@ -21,6 +21,7 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -51,6 +52,20 @@ var obscureKey = []byte{
 	0x6b, 0xfd, 0x7c, 0x63, 0xc8, 0x86, 0xa9, 0x2b,
 	0xd3, 0x90, 0x19, 0x8e, 0xb8, 0x12, 0x8a, 0xfb,
 	0xf4, 0xde, 0x16, 0x2b, 0x8b, 0x95, 0xf6, 0x38,
+}
+
+// randomState generates a CSRF-protection token for the OAuth state
+// parameter. Cryptographically random rather than derived from a
+// timestamp, since a guessable state is the classic OAuth CSRF weakness —
+// low practical exploitability here (loopback-only server on an ephemeral
+// port an outside attacker can't predict), but no reason not to do this
+// correctly.
+func randomState() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 func revealClientSecret(s string) (string, error) {
@@ -107,7 +122,10 @@ func Authorize(ctx context.Context, openURL func(string) error) (*AuthResult, er
 		RedirectURL:  redirectURL,
 	}
 
-	state := fmt.Sprintf("%d", time.Now().UnixNano())
+	state, err := randomState()
+	if err != nil {
+		return nil, fmt.Errorf("generate state: %w", err)
+	}
 	authURL := conf.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent"))
 
 	codeCh := make(chan string, 1)
