@@ -14,6 +14,23 @@ type Config struct {
 	CloudRoot     string `json:"cloud_root"`     // folder the cloud client syncs to disk
 	SyncSubfolder string `json:"sync_subfolder"` // subfolder inside CloudRoot dedicated to this app
 	SavePath      string `json:"save_path,omitempty"`
+
+	// GDriveClientID/Secret let a player use their own Google OAuth client
+	// instead of the one this app ships with. rclone's docs say the shared
+	// client it lends us "is being retired and will stop working during
+	// 2026", and when that happens no update to this app can fix it for
+	// someone — only their own client ID can. Empty means "use the
+	// built-in one", which is still the normal case.
+	GDriveClientID     string `json:"gdrive_client_id,omitempty"`
+	GDriveClientSecret string `json:"gdrive_client_secret,omitempty"`
+}
+
+// GoogleCredentials returns the player's own OAuth client if they set one.
+func (c Config) GoogleCredentials() (id, secret string, custom bool) {
+	if c.GDriveClientID != "" && c.GDriveClientSecret != "" {
+		return c.GDriveClientID, c.GDriveClientSecret, true
+	}
+	return "", "", false
 }
 
 func dir() (string, error) {

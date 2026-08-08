@@ -57,8 +57,8 @@ func Version(ctx context.Context) (major, minor int, err error) {
 	return major, minor, nil
 }
 
-// checkVersion reports a friendly error if rclone is too old to drive.
-func checkVersion(ctx context.Context) error {
+// CheckVersion reports a friendly error if rclone is too old to drive.
+func CheckVersion(ctx context.Context) error {
 	major, minor, err := Version(ctx)
 	if err != nil {
 		return err
@@ -154,7 +154,7 @@ func EnsureMirror(ctx context.Context, remoteName, remoteSubfolder, localDir str
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return fmt.Errorf("systemctl is not available")
 	}
-	if err := checkVersion(ctx); err != nil {
+	if err := CheckVersion(ctx); err != nil {
 		return err
 	}
 	if remoteSubfolder == "" {

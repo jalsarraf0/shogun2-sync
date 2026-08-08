@@ -42,6 +42,10 @@ export function GetStatus() {
   return window['go']['main']['App']['GetStatus']();
 }
 
+export function OpenExternal(arg1) {
+  return window['go']['main']['App']['OpenExternal'](arg1);
+}
+
 export function OpenInFileManager(arg1) {
   return window['go']['main']['App']['OpenInFileManager'](arg1);
 }

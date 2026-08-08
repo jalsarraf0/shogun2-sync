@@ -5,6 +5,8 @@ export namespace config {
 	    cloud_root: string;
 	    sync_subfolder: string;
 	    save_path?: string;
+	    gdrive_client_id?: string;
+	    gdrive_client_secret?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Config(source);
@@ -16,6 +18,8 @@ export namespace config {
 	        this.cloud_root = source["cloud_root"];
 	        this.sync_subfolder = source["sync_subfolder"];
 	        this.save_path = source["save_path"];
+	        this.gdrive_client_id = source["gdrive_client_id"];
+	        this.gdrive_client_secret = source["gdrive_client_secret"];
 	    }
 	}
 

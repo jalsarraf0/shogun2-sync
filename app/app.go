@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"strings"
 
 	"shogun2sync/internal/applog"
 	"shogun2sync/internal/bisync"
@@ -74,16 +75,35 @@ func (a *App) AuthorizeGoogleDrive(rootFolderID, subfolder string) GoogleDriveAu
 	if !rcloneutil.Installed() {
 		return GoogleDriveAuthResult{OK: false, Error: "rclone is not installed"}
 	}
+	// Fail here rather than after the player has gone through a browser
+	// login, only to have the background sync refuse to start.
+	if bisync.Available() {
+		if _, _, err := bisync.Version(a.ctx); err == nil {
+			if err := bisync.CheckVersion(a.ctx); err != nil {
+				return GoogleDriveAuthResult{OK: false, Error: err.Error()}
+			}
+		}
+	}
 
-	result, err := gdrive.Authorize(a.ctx, func(url string) error {
+	cfg, _ := config.Load()
+	creds, err := gdrive.Shared()
+	if err != nil {
+		return GoogleDriveAuthResult{OK: false, Error: err.Error()}
+	}
+	if id, secret, custom := cfg.GoogleCredentials(); custom {
+		creds = gdrive.Credentials{ClientID: id, ClientSecret: secret}
+	}
+
+	result, err := gdrive.Authorize(a.ctx, creds, func(url string) error {
 		return openForOAuth(a.ctx, url)
 	})
 	if err != nil {
+		applog.Printf("gdrive authorize failed: %v", err)
 		return GoogleDriveAuthResult{OK: false, Error: err.Error()}
 	}
 
 	const remoteName = "gdrive"
-	if err := rcloneutil.ConfigureGoogleDriveRemote(a.ctx, remoteName, rootFolderID, result.TokenJSON); err != nil {
+	if err := rcloneutil.ConfigureGoogleDriveRemote(a.ctx, remoteName, rootFolderID, result.TokenJSON, creds.ClientID, creds.ClientSecret); err != nil {
 		return GoogleDriveAuthResult{OK: false, Error: fmt.Sprintf("saving rclone config: %v", err)}
 	}
 	if err := rcloneutil.VerifyAccess(a.ctx, remoteName); err != nil {
@@ -247,6 +267,15 @@ func (a *App) ResolveConflict(path string) string {
 		return err.Error()
 	}
 	return ""
+}
+
+// OpenExternal opens a web link in the player's browser. Links inside the
+// app's own webview would otherwise navigate away from the UI with no way
+// back — there's no address bar to return from.
+func (a *App) OpenExternal(url string) {
+	if strings.HasPrefix(url, "https://") || strings.HasPrefix(url, "http://") {
+		runtime.BrowserOpenURL(a.ctx, url)
+	}
 }
 
 // OpenInFileManager opens the folder containing path in the OS's native

@@ -24,6 +24,8 @@ export function GetLogTail():Promise<string>;
 
 export function GetStatus():Promise<orchestrate.StatusResult>;
 
+export function OpenExternal(arg1:string):Promise<void>;
+
 export function OpenInFileManager(arg1:string):Promise<void>;
 
 export function PathExists(arg1:string):Promise<boolean>;

@@ -19,6 +19,7 @@ import {
   GetGoogleDriveMirrorStatus,
   RunUndo,
   GetLogTail,
+  OpenExternal,
 } from '../wailsjs/go/main/App';
 
 const app = document.querySelector('#app');
@@ -80,6 +81,8 @@ async function boot() {
       cloudRoot: cfg.cloud_root || '',
       syncSubfolder: cfg.sync_subfolder || 'Shogun2SaveSync',
       savePath: cfg.save_path || '',
+      gClientId: cfg.gdrive_client_id || '',
+      gClientSecret: cfg.gdrive_client_secret || '',
     };
     renderStatus();
   } else {
@@ -235,6 +238,22 @@ function renderGoogleDriveSetup() {
       <label>Sync folder name${draft.gdriveRole === 'host' ? ' (created in your Drive)' : ' (created inside it)'}</label>
       <input type="text" id="subfolder" value="${escapeHtml(draft.syncSubfolder)}" />
     </div>
+    <details class="advanced">
+      <summary>Use my own Google credentials</summary>
+      <p class="sub">
+        Only needed if sign-in stops working — Google is retiring the shared
+        credentials this app uses. Creating your own takes a few minutes:
+        see <span class="link" id="credsHelp">rclone's guide</span>.
+      </p>
+      <div class="field">
+        <label>Client ID</label>
+        <input type="text" id="gClientId" value="${escapeHtml(draft.gClientId || '')}" />
+      </div>
+      <div class="field">
+        <label>Client secret</label>
+        <input type="text" id="gClientSecret" value="${escapeHtml(draft.gClientSecret || '')}" />
+      </div>
+    </details>
     <div id="authArea">
       <div class="btn-row">
         <button class="btn secondary" id="back">Back</button>
@@ -243,6 +262,9 @@ function renderGoogleDriveSetup() {
     </div>
     <div id="authStatus"></div>
   `);
+
+  document.getElementById('credsHelp').onclick = () =>
+    OpenExternal('https://rclone.org/drive/#making-your-own-client-id');
 
   document.querySelectorAll('.choice[data-role]').forEach((el) => {
     el.onclick = () => {
@@ -261,6 +283,19 @@ function renderGoogleDriveSetup() {
       document.getElementById('authStatus').innerHTML = '<div class="banner error">Paste the folder link first.</div>';
       return;
     }
+
+    // Custom credentials have to be saved before authorizing, since the
+    // backend reads them from the config when it builds the login URL.
+    draft.gClientId = document.getElementById('gClientId').value.trim();
+    draft.gClientSecret = document.getElementById('gClientSecret').value.trim();
+    await SaveConfigCmd({
+      cloud_provider: 'googledrive',
+      cloud_root: draft.cloudRoot || '',
+      sync_subfolder: subfolder,
+      save_path: draft.savePath || '',
+      gdrive_client_id: draft.gClientId,
+      gdrive_client_secret: draft.gClientSecret,
+    });
 
     const statusEl = document.getElementById('authStatus');
     statusEl.innerHTML = `
@@ -384,6 +419,8 @@ async function runSetupAndFinish() {
     cloud_root: draft.cloudRoot,
     sync_subfolder: draft.syncSubfolder,
     save_path: draft.savePath || '',
+    gdrive_client_id: draft.gClientId || '',
+    gdrive_client_secret: draft.gClientSecret || '',
   };
   const saveErr = await SaveConfigCmd(cfg);
   if (saveErr) {

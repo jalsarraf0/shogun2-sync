@@ -56,7 +56,13 @@ func RemoteExists(ctx context.Context, name string) (bool, error) {
 // rootFolderID may be empty: that's the "I own this Drive and I'm the one
 // sharing it" case, where there's no shared folder to scope into — the
 // remote just points at the user's own "My Drive" root as normal.
-func ConfigureGoogleDriveRemote(ctx context.Context, name, rootFolderID, tokenJSON string) error {
+// clientID and clientSecret are recorded on the remote as well as being
+// used for the login. rclone refreshes the access token itself on every
+// later sync, and a refresh has to be made against the same OAuth client
+// that issued the token — omit them and the token quietly stops
+// refreshing once it expires, which looks like syncing "just stopping"
+// an hour after setup.
+func ConfigureGoogleDriveRemote(ctx context.Context, name, rootFolderID, tokenJSON, clientID, clientSecret string) error {
 	if !Installed() {
 		return ErrNotInstalled
 	}
@@ -64,28 +70,34 @@ func ConfigureGoogleDriveRemote(ctx context.Context, name, rootFolderID, tokenJS
 	if err != nil {
 		return err
 	}
-	args := []string{
-		"config", "create", name, "drive",
-		"scope=drive",
-		"token=" + tokenJSON,
-		"config_is_local=false",
-		"--non-interactive",
-	}
-	if exists {
-		args = []string{
-			"config", "update", name,
-			"scope", "drive",
-			"token", tokenJSON,
-			"--non-interactive",
-		}
+
+	settings := [][2]string{
+		{"scope", "drive"},
+		{"token", tokenJSON},
+		{"client_id", clientID},
+		{"client_secret", clientSecret},
 	}
 	if rootFolderID != "" {
-		if exists {
-			args = append(args, "root_folder_id", rootFolderID)
-		} else {
-			args = append(args, "root_folder_id="+rootFolderID)
-		}
+		settings = append(settings, [2]string{"root_folder_id", rootFolderID})
 	}
+
+	var args []string
+	if exists {
+		// `config update` takes key and value as separate arguments.
+		args = []string{"config", "update", name}
+		for _, kv := range settings {
+			args = append(args, kv[0], kv[1])
+		}
+	} else {
+		// `config create` takes them as key=value pairs.
+		args = []string{"config", "create", name, "drive"}
+		for _, kv := range settings {
+			args = append(args, kv[0]+"="+kv[1])
+		}
+		args = append(args, "config_is_local=false")
+	}
+	args = append(args, "--non-interactive")
+
 	_, err = run(ctx, args...)
 	return err
 }

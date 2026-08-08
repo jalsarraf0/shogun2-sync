@@ -84,10 +84,14 @@ jobs:
           go-version: "1.25"
           cache-dependency-path: app/go.sum
 
+      # Run from inside the directory rather than with `npm --prefix`:
+      # on Windows npm resolves a relative --prefix against the wrong root
+      # and reads the repo's non-existent top-level package.json.
       - name: Build frontend
+        working-directory: app/frontend
         run: |
-          npm install --prefix app/frontend
-          npm run build --prefix app/frontend
+          npm install
+          npm run build
 
       - name: Vet
         working-directory: app

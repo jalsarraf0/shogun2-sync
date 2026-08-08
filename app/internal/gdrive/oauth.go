@@ -24,10 +24,12 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -93,16 +95,58 @@ type AuthResult struct {
 	TokenJSON string // ready to hand to `rclone config update <name> token <json>`
 }
 
+// Credentials identify the OAuth client the Drive login runs against.
+type Credentials struct {
+	ClientID     string
+	ClientSecret string
+}
+
+// Shared returns rclone's own public client credentials.
+//
+// rclone's docs now say this shared client "is being retired and will stop
+// working during 2026", so this is no longer something to rely on
+// indefinitely — hence Credentials being a parameter at all, so a player
+// can supply their own client ID when that day arrives without needing a
+// new build of this app.
+func Shared() (Credentials, error) {
+	secret, err := revealClientSecret(rcloneEncryptedClientSecret)
+	if err != nil {
+		return Credentials{}, fmt.Errorf("decode client secret: %w", err)
+	}
+	return Credentials{ClientID: rcloneClientID, ClientSecret: secret}, nil
+}
+
+// ErrClientRetired reports that Google no longer recognises the OAuth
+// client. Distinguishing this from a generic failure matters because the
+// fix is entirely different: nothing about the player's own setup is
+// wrong, and no amount of retrying will help.
+var ErrClientRetired = errors.New(
+	"Google no longer accepts the sign-in credentials this app ships with. " +
+		"You can supply your own Google client ID under \"Use my own Google credentials\" — " +
+		"https://rclone.org/drive/#making-your-own-client-id has the steps")
+
+// classifyExchangeError turns Google's OAuth error into something a player
+// can act on.
+func classifyExchangeError(err error) error {
+	var re *oauth2.RetrieveError
+	if errors.As(err, &re) {
+		body := string(re.Body)
+		if strings.Contains(body, "invalid_client") || strings.Contains(body, "deleted_client") {
+			return ErrClientRetired
+		}
+	}
+	return fmt.Errorf("exchange code for token: %w", err)
+}
+
 // Authorize runs the full OAuth loopback flow: starts a local callback
 // server on an OS-assigned port, opens authURL via openURL (expected to
 // launch the system's default browser — the standard, most reliable choice
 // for OAuth logins; the same pattern used by gcloud, the GitHub CLI, AWS
 // CLI, and rclone itself), waits for the redirect, and exchanges the code
 // for a token.
-func Authorize(ctx context.Context, openURL func(string) error) (*AuthResult, error) {
-	secret, err := revealClientSecret(rcloneEncryptedClientSecret)
-	if err != nil {
-		return nil, fmt.Errorf("decode client secret: %w", err)
+func Authorize(ctx context.Context, creds Credentials, openURL func(string) error) (*AuthResult, error) {
+	if creds.ClientID == "" || creds.ClientSecret == "" {
+		return nil, errors.New("no Google client ID configured")
 	}
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -115,8 +159,8 @@ func Authorize(ctx context.Context, openURL func(string) error) (*AuthResult, er
 	redirectURL := fmt.Sprintf("http://127.0.0.1:%d/", port)
 
 	conf := &oauth2.Config{
-		ClientID:     rcloneClientID,
-		ClientSecret: secret,
+		ClientID:     creds.ClientID,
+		ClientSecret: creds.ClientSecret,
 		Scopes:       []string{driveScope},
 		Endpoint:     google.Endpoint,
 		RedirectURL:  redirectURL,
@@ -194,7 +238,7 @@ func Authorize(ctx context.Context, openURL func(string) error) (*AuthResult, er
 
 	token, err := conf.Exchange(ctx, code)
 	if err != nil {
-		return nil, fmt.Errorf("exchange code for token: %w", err)
+		return nil, classifyExchangeError(err)
 	}
 
 	tokenJSON, err := json.Marshal(token)
