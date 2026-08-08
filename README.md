@@ -1,5 +1,9 @@
 # Shogun 2 Save Sync
 
+[![CI](https://github.com/jalsarraf0/shogun2-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/jalsarraf0/shogun2-sync/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/jalsarraf0/shogun2-sync)](https://github.com/jalsarraf0/shogun2-sync/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Turns a Shogun 2 multiplayer campaign desync from "campaign is dead" into
 a five-minute fix, by keeping both players' save files mirrored through a
 cloud folder you already use — instead of manually hunting down a save
