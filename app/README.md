@@ -1,19 +1,22 @@
-# README
+# app/
 
-## About
+The Shogun 2 Save Sync application: a Go backend (see `internal/`) with a
+Wails v2 webview UI (`frontend/`). See the [top-level README](../README.md)
+for what this does and how to build/install it.
 
-This is the official Wails Vanilla template.
+## Local development
 
-You can configure the project by editing `wails.json`. More information about the project settings can be found
-here: https://wails.io/docs/reference/project-config
+```bash
+npm install --prefix frontend
+wails dev -tags webkit2_41
+```
 
-## Live Development
+`wails dev` gives hot-reload on the frontend and a devtools-accessible dev
+server at http://localhost:34115.
 
-To run in live development mode, run `wails dev` in the project directory. This will run a Vite development
-server that will provide very fast hot reload of your frontend changes. If you want to develop in a browser
-and have access to your Go methods, there is also a dev server that runs on http://localhost:34115. Connect
-to this in your browser, and you can call your Go code from devtools.
+## Testing
 
-## Building
-
-To build a redistributable, production mode package, use `wails build`.
+```bash
+go vet ./...
+go test ./...
+```

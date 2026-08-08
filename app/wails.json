@@ -9,5 +9,12 @@
   "author": {
     "name": "jalsarraf0",
     "email": "19882582+jalsarraf0@users.noreply.github.com"
+  },
+  "info": {
+    "companyName": "shogun2-sync",
+    "productName": "Shogun 2 Save Sync",
+    "productVersion": "0.1.0",
+    "copyright": "Copyright (c) 2026 shogun2-sync contributors",
+    "comments": "Keeps Shogun 2 multiplayer campaign saves in sync"
   }
 }

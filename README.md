@@ -64,6 +64,9 @@ No installer required for the Windows build — it's a single portable `.exe`.
   maintain a real local mirror — a live network mount would risk the
   exact write failures a streaming client has. This needs `rclone`
   installed (pulled in automatically by the `.deb`/`.rpm` packages).
+  The wizard asks whether you're the one who received a shared folder
+  link, or the one sharing your own Drive — the host path needs no
+  link at all and hands you back a shareable link to send afterward.
 
 ## Reducing how often desyncs happen in the first place
 
