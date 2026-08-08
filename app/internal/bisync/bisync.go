@@ -68,14 +68,28 @@ func EnsureMirror(ctx context.Context, remoteName, remoteSubfolder, localDir str
 	if err != nil {
 		return err
 	}
+	shPath, err := exec.LookPath("sh")
+	if err != nil {
+		return err
+	}
+
+	// rclone bisync refuses to run when its last-known ("prior") listing
+	// has zero entries, treating that as indistinguishable from a mount
+	// failure that emptied a folder that should have real content. For a
+	// freshly set-up sync folder, zero entries is simply the truth, not a
+	// failure — so on that specific error we fall back to --resync, which
+	// is safe here precisely because there's nothing at risk yet. Once
+	// real files exist this branch stops being taken at all.
+	normalRun := fmt.Sprintf("%s bisync %q %q --resilient --recover --create-empty-src-dirs", rclonePath, localDir, remote)
+	resyncRun := fmt.Sprintf("%s bisync %q %q --resync --create-empty-src-dirs", rclonePath, localDir, remote)
 
 	serviceContents := fmt.Sprintf(`[Unit]
 Description=Bisync Shogun2 save folder with Google Drive
 
 [Service]
 Type=oneshot
-ExecStart=%s bisync %q %q --resilient --recover --create-empty-src-dirs
-`, rclonePath, localDir, remote)
+ExecStart=%s -c '%s || %s'
+`, shPath, normalRun, resyncRun)
 
 	timerContents := `[Unit]
 Description=Run Shogun2 Google Drive bisync every 2 minutes
