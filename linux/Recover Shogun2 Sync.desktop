@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Recover Shogun2 Sync
+Comment=Fix a Shogun 2 multiplayer campaign save conflict
+Exec=/home/jalsarraf/git/shogun2-sync/linux/recover.sh
+Icon=applications-games
+Terminal=true
+Categories=Game;

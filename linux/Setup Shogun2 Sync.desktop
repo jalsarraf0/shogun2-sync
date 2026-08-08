@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Setup Shogun2 Sync
+Comment=Set up automatic save syncing for Shogun 2 multiplayer campaigns
+Exec=/home/jalsarraf/git/shogun2-sync/linux/setup.sh
+Icon=applications-games
+Terminal=true
+Categories=Game;

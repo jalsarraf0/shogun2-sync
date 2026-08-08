@@ -1,0 +1,5 @@
+{
+  "cloud_provider": "dropbox",
+  "cloud_root": "~/Dropbox",
+  "sync_subfolder": "Shogun2SaveSync"
+}
