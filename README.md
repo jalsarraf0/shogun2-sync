@@ -26,11 +26,15 @@ Grab the latest release for your OS from the
 | Windows | `shogun2sync-windows-amd64.zip` — unzip, run `shogun2sync.exe` |
 | Debian / Ubuntu | `shogun2sync_<version>_amd64.deb` |
 | Fedora / Nobara | `shogun2sync-<version>-1.x86_64.rpm` |
-| Arch | `shogun2sync-<version>-1-x86_64.pkg.tar.zst`, or build the included `PKGBUILD` |
+| Arch | `shogun2sync-<version>-1-x86_64.pkg.tar.zst`, or build from the `PKGBUILD` attached to the release |
 | Any Linux | `shogun2sync-linux-amd64` — portable binary, just `chmod +x` and run |
 | Source | `shogun2-sync-<version>-src.tar.gz` |
 
 No installer required for the Windows build — it's a single portable `.exe`.
+
+Every release also ships a `SHA256SUMS` file. To check what you
+downloaded, put it beside the artifacts and run
+`sha256sum -c --ignore-missing SHA256SUMS`.
 
 ## Quick start
 
