@@ -49,7 +49,8 @@ jobs:
 
   release:
     needs: quality-windows
-    runs-on: [self-hosted, dominus]
+    # GitHub-hosted: org builds must not depend on a personal dominus runner.
+    runs-on: ubuntu-24.04
     permissions:
       attestations: write
       contents: write

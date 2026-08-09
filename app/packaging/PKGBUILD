@@ -5,12 +5,12 @@ pkgrel=1
 _rclonever=1.74.4
 pkgdesc="Keep Shogun 2 multiplayer campaign saves in sync so a desync is a five-minute fix, not a dead campaign"
 arch=('x86_64')
-url="https://github.com/jalsarraf0/shogun2-sync"
+url="https://github.com/Al-Sarraf-Tech/shogun2-sync"
 license=('MIT')
 depends=('ca-certificates' 'glibc' 'gtk3' 'systemd' 'webkit2gtk-4.1' 'xdg-utils')
 makedepends=('go' 'npm')
 source=(
-  "$pkgname-$pkgver.tar.gz::https://github.com/jalsarraf0/shogun2-sync/releases/download/v$pkgver/shogun2-sync-$pkgver-src.tar.gz"
+  "$pkgname-$pkgver.tar.gz::https://github.com/Al-Sarraf-Tech/shogun2-sync/releases/download/v$pkgver/shogun2-sync-$pkgver-src.tar.gz"
   "https://downloads.rclone.org/v$_rclonever/rclone-v$_rclonever-linux-amd64.zip"
 )
 sha256sums=(

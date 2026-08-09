@@ -16,7 +16,9 @@ on:
 
 jobs:
   test-linux:
-    runs-on: [self-hosted, dominus]
+    # GitHub-hosted so the Al-Sarraf-Tech org does not depend on a personal
+    # self-hosted runner label that is not registered for the organization.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -294,7 +296,7 @@ jobs:
         run: go test ./...
 
   build-windows-cross:
-    runs-on: [self-hosted, dominus]
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 

@@ -17,7 +17,7 @@ description: |
   cloud folder, and gives you a one-click way to spot and resolve the
   duplicate files a desync leaves behind.
 vendor: shogun2-sync
-homepage: https://github.com/jalsarraf0/shogun2-sync
+homepage: https://github.com/Al-Sarraf-Tech/shogun2-sync
 license: MIT
 
 # Runtime library names differ between package ecosystems. Keep these in

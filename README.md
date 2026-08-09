@@ -1,7 +1,7 @@
 # Shogun 2 Save Sync
 
-[![CI](https://github.com/jalsarraf0/shogun2-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/jalsarraf0/shogun2-sync/actions/workflows/ci.yml)
-[![Latest release](https://img.shields.io/github/v/release/jalsarraf0/shogun2-sync)](https://github.com/jalsarraf0/shogun2-sync/releases/latest)
+[![CI](https://github.com/Al-Sarraf-Tech/shogun2-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/Al-Sarraf-Tech/shogun2-sync/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/Al-Sarraf-Tech/shogun2-sync)](https://github.com/Al-Sarraf-Tech/shogun2-sync/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Turns a Shogun 2 multiplayer campaign desync from "campaign is dead" into
@@ -19,7 +19,7 @@ A small native app for 64-bit Windows and Linux, no command line required.
 ## Download
 
 Grab the latest release for your OS from the
-[Releases page](https://github.com/jalsarraf0/shogun2-sync/releases):
+[Releases page](https://github.com/Al-Sarraf-Tech/shogun2-sync/releases):
 
 | Platform | File |
 |---|---|
@@ -118,7 +118,7 @@ Every release also ships a `SHA256SUMS` file. To check what you
 downloaded, put it beside the artifacts and run
 `sha256sum -c --ignore-missing SHA256SUMS`.
 The release workflow also publishes GitHub/Sigstore provenance attestations;
-`gh attestation verify <downloaded-file> -R jalsarraf0/shogun2-sync` confirms
+`gh attestation verify <downloaded-file> -R Al-Sarraf-Tech/shogun2-sync` confirms
 which repository, commit, and workflow produced an installer.
 
 ## Quick start
