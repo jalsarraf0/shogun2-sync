@@ -152,24 +152,39 @@ func (a *App) AuthorizeGoogleDrive(rootFolderID, subfolder, clientID, clientSecr
 		return GoogleDriveAuthResult{OK: false, Error: fmt.Sprintf("could not access the shared folder: %v", err)}
 	}
 	isGuest := rootFolderID != ""
-	if !isGuest {
-		if err := rcloneutil.EnsureSubfolder(a.ctx, remoteName, subfolder); err != nil {
-			return GoogleDriveAuthResult{OK: false, Error: fmt.Sprintf("creating sync folder: %v", err)}
-		}
+	// Resolve first: create the subfolder only when the remote root does not
+	// already contain it (or already look like the save folder). Blind mkdir
+	// against an already-scoped shared folder is what nested
+	// Shogun2SaveSync/Shogun2SaveSync trees on every resync.
+	remoteSubfolder, err := rcloneutil.ResolveSyncSubfolder(a.ctx, remoteName, subfolder, isGuest)
+	if err != nil {
+		return GoogleDriveAuthResult{OK: false, Error: fmt.Sprintf("preparing sync folder: %v", err)}
 	}
 
-	// The game always links to localRoot/subfolder. A host mirrors that exact
-	// directory to remote:subfolder. A guest's remote is already scoped to the
-	// shared folder, so it mirrors to remote: without appending the folder name
-	// a second time. This invariant keeps both players on the same directory.
-	remoteSubfolder, localDir, _ := googleMirrorLocation(rootFolderID, subfolder)
-	if err := bisync.EnsureMirror(a.ctx, remoteName, remoteSubfolder, localDir, isGuest); err != nil {
+	// Local layout is always cloudRoot/subfolder (or cloudRoot when it already
+	// is that folder). Host and guest must land on the same absolute path so
+	// the game's link target matches on both machines.
+	_, localDir, remoteRootIsSyncFolder := googleMirrorLocation(rootFolderID, subfolder)
+	// When ResolveSyncSubfolder decided the remote root is the sync folder,
+	// treat the mirror as root-scoped even for a host-style auth.
+	if remoteSubfolder == "" {
+		remoteRootIsSyncFolder = true
+	}
+	if err := os.MkdirAll(localDir, 0o755); err != nil {
+		return GoogleDriveAuthResult{OK: false, Error: fmt.Sprintf("creating local sync folder: %v", err)}
+	}
+	if err := orchestrate.FlattenSameNameNesting(localDir, subfolder); err != nil {
+		return GoogleDriveAuthResult{OK: false, Error: fmt.Sprintf("cleaning nested sync folders: %v", err)}
+	}
+	if err := bisync.EnsureMirror(a.ctx, remoteName, remoteSubfolder, localDir, remoteRootIsSyncFolder); err != nil {
 		return GoogleDriveAuthResult{OK: false, Error: fmt.Sprintf("setting up local sync mirror: %v", err)}
 	}
 
 	res := GoogleDriveAuthResult{OK: true}
 	if !isGuest {
-		link, err := rcloneutil.ShareableLink(a.ctx, remoteName, subfolder)
+		// Share the path we actually resolved (subfolder or root).
+		sharePath := remoteSubfolder
+		link, err := rcloneutil.ShareableLink(a.ctx, remoteName, sharePath)
 		if err != nil {
 			return GoogleDriveAuthResult{OK: false, Error: fmt.Sprintf("creating a share link: %v", err)}
 		}

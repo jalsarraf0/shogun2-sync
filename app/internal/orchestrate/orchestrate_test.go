@@ -49,6 +49,70 @@ func TestSetupMovesFilesAndLinks(t *testing.T) {
 	}
 }
 
+// CloudRoot that is already the sync folder must not gain another subfolder
+// level — that is the nested-folder bug on every re-setup.
+func TestSyncTargetDoesNotDoubleNestWhenRootIsAlreadyTheFolder(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "Shogun2SaveSync")
+	cfg := config.Config{CloudProvider: "dropbox", CloudRoot: root, SyncSubfolder: "Shogun2SaveSync"}
+	if got := SyncTarget(cfg); got != root {
+		t.Fatalf("SyncTarget = %q, want %q", got, root)
+	}
+}
+
+func TestFlattenSameNameNestingHoistsDeepSaves(t *testing.T) {
+	root := t.TempDir()
+	deep := filepath.Join(root, "Shogun2SaveSync", "Shogun2SaveSync", "Shogun2SaveSync")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deep, "turn50.save_multiplayer"), []byte("deep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "already.save"), []byte("top"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Same basename at root and deep must keep both copies.
+	if err := os.WriteFile(filepath.Join(deep, "already.save"), []byte("deep-copy"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := FlattenSameNameNesting(root, "Shogun2SaveSync"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "turn50.save_multiplayer")); err != nil {
+		t.Fatalf("deep save was not hoisted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "Shogun2SaveSync")); !os.IsNotExist(err) {
+		t.Fatalf("nested folder should be gone, err=%v", err)
+	}
+	// Original top-level file still present.
+	if got, err := os.ReadFile(filepath.Join(root, "already.save")); err != nil || string(got) != "top" {
+		t.Fatalf("top-level save changed: %q err=%v", got, err)
+	}
+}
+
+func TestSetupFlattensExistingNestedSyncFolder(t *testing.T) {
+	savePath, cloudRoot := setupFakeSave(t)
+	cfg := config.Config{CloudProvider: "dropbox", CloudRoot: cloudRoot, SyncSubfolder: "Shogun2SaveSync"}
+	// Simulate the nested mess before setup links the game.
+	deep := filepath.Join(SyncTarget(cfg), "Shogun2SaveSync", "Shogun2SaveSync")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deep, "nested.save_multiplayer"), []byte("n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := Setup(cfg, savePath)
+	if !res.OK {
+		t.Fatalf("Setup failed: %s", res.Error)
+	}
+	if _, err := os.Stat(filepath.Join(SyncTarget(cfg), "nested.save_multiplayer")); err != nil {
+		t.Fatalf("setup should flatten nested saves into the target: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(SyncTarget(cfg), "Shogun2SaveSync")); !os.IsNotExist(err) {
+		t.Fatal("setup left a nested Shogun2SaveSync directory")
+	}
+}
+
 func TestSetupIsIdempotent(t *testing.T) {
 	savePath, cloudRoot := setupFakeSave(t)
 	cfg := config.Config{CloudProvider: "dropbox", CloudRoot: cloudRoot, SyncSubfolder: "Shogun2SaveSync"}

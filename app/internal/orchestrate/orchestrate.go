@@ -4,6 +4,8 @@ package orchestrate
 
 import (
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,9 +19,141 @@ import (
 )
 
 // SyncTarget returns cfg's cloud root + sync subfolder, with ~ expanded.
+//
+// If the player already pointed CloudRoot at the sync folder itself (its
+// basename is the configured subfolder name), that path is used as-is. Always
+// joining would create CloudRoot/Shogun2SaveSync/Shogun2SaveSync on every
+// re-setup — the nested-folder bug this app used to ship.
 func SyncTarget(cfg config.Config) string {
 	root := paths.ExpandHome(strings.TrimSpace(cfg.CloudRoot))
-	return filepath.Join(root, strings.TrimSpace(cfg.SyncSubfolder))
+	name := strings.TrimSpace(cfg.SyncSubfolder)
+	if name == "" {
+		return root
+	}
+	if equalPathBase(root, name) {
+		return root
+	}
+	return filepath.Join(root, name)
+}
+
+func equalPathBase(path, name string) bool {
+	base := filepath.Base(filepath.Clean(path))
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(base, name)
+	}
+	return base == name
+}
+
+// FlattenSameNameNesting collapses accidental root/name/name/... trees into a
+// flat root. Prior releases re-created the sync folder name inside itself on
+// every resync when the remote was already scoped to that folder; saves ended
+// up several directories deep and the game never saw them.
+//
+// Every regular file under root/name is hoisted to root (collisions keep both
+// copies via a setup-conflict rename). The nested directory tree is then
+// removed. The save folder is supposed to be flat, so nothing useful is lost.
+func FlattenSameNameNesting(root, name string) error {
+	root = filepath.Clean(root)
+	name = strings.TrimSpace(name)
+	if root == "" || name == "" || name == "." || name == ".." {
+		return nil
+	}
+	if strings.ContainsAny(name, `/\:`) || strings.Contains(name, string(filepath.Separator)) {
+		return fmt.Errorf("refusing to flatten a path-like folder name %q", name)
+	}
+	nested := filepath.Join(root, name)
+	info, err := os.Lstat(nested)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil
+	}
+
+	var files []string
+	err = filepath.WalkDir(nested, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		// Only hoist real files. Symlinks/special nodes stay out of the way
+		// rather than risk following them into the wrong place.
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		files = append(files, path)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("scanning nested sync folder %s: %w", nested, err)
+	}
+	for _, from := range files {
+		to := nonClobberingSibling(filepath.Join(root, filepath.Base(from)))
+		if err := moveFilePreserve(from, to); err != nil {
+			return fmt.Errorf("hoisting %s: %w", filepath.Base(from), err)
+		}
+	}
+	if err := os.RemoveAll(nested); err != nil {
+		return fmt.Errorf("removing nested sync folder %s: %w", nested, err)
+	}
+	return nil
+}
+
+func nonClobberingSibling(want string) string {
+	if _, err := os.Lstat(want); err != nil {
+		return want
+	}
+	ext := filepath.Ext(want)
+	base := strings.TrimSuffix(want, ext)
+	stamp := time.Now().Format("2006-01-02 150405")
+	for i := 0; ; i++ {
+		candidate := fmt.Sprintf("%s (setup conflict %s)%s", base, stamp, ext)
+		if i > 0 {
+			candidate = fmt.Sprintf("%s (setup conflict %s-%d)%s", base, stamp, i, ext)
+		}
+		if _, err := os.Lstat(candidate); err != nil {
+			return candidate
+		}
+	}
+}
+
+func moveFilePreserve(from, to string) error {
+	if equalPath(canonicalComparisonPath(from), canonicalComparisonPath(to)) {
+		return nil
+	}
+	if err := os.Rename(from, to); err == nil {
+		return nil
+	}
+	in, err := os.Open(from)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(to, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		_ = os.Remove(to)
+		return copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(to)
+		return closeErr
+	}
+	_ = os.Chtimes(to, info.ModTime(), info.ModTime())
+	return os.Remove(from)
 }
 
 // ValidateConfig rejects ambiguous or dangerous paths before any save files
@@ -179,6 +313,12 @@ func Setup(cfg config.Config, savePathOverride string) SetupResult {
 
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		return SetupResult{OK: false, Error: err.Error(), SavePath: savePath, SyncTarget: target}
+	}
+	// Undo nested Shogun2SaveSync/Shogun2SaveSync trees left by older builds
+	// (or by re-creating the subfolder inside an already-scoped Drive root)
+	// before linking the game at this path.
+	if err := FlattenSameNameNesting(target, strings.TrimSpace(cfg.SyncSubfolder)); err != nil {
+		return SetupResult{OK: false, Error: fmt.Sprintf("cleaning nested sync folders: %v", err), SavePath: savePath, SyncTarget: target}
 	}
 
 	// Prove that this account can create the required link before moving a

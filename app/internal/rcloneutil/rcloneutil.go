@@ -588,6 +588,142 @@ func EnsureSubfolder(ctx context.Context, remoteName, subfolder string) error {
 	return err
 }
 
+// remotePath joins remoteName with an optional relative path ("", "Foo", or
+// "Foo/Bar") into the rclone remote:path form.
+func remotePath(remoteName, rel string) string {
+	rel = strings.Trim(strings.ReplaceAll(rel, "\\", "/"), "/")
+	if rel == "" {
+		return remoteName + ":"
+	}
+	return remoteName + ":" + rel
+}
+
+// listRemoteNamesAt lists immediate child names under remoteName:rel.
+// Directories keep a trailing slash in rclone's lsf default output when
+// --dirs-only is not set; we accept both "name" and "name/".
+func listRemoteNamesAt(ctx context.Context, remoteName, rel string) ([]string, error) {
+	out, err := run(ctx, "lsf", remotePath(remoteName, rel), "--max-depth", "1")
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		name := strings.TrimSpace(line)
+		name = strings.TrimSuffix(name, "/")
+		if name != "" && name != "." && name != ".." {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
+func remoteHasChild(ctx context.Context, remoteName, rel, child string) (bool, error) {
+	names, err := listRemoteNamesAt(ctx, remoteName, rel)
+	if err != nil {
+		return false, err
+	}
+	for _, name := range names {
+		if name == child {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func remoteLooksLikeSaveFolder(ctx context.Context, remoteName, rel string) (bool, error) {
+	names, err := listRemoteNamesAt(ctx, remoteName, rel)
+	if err != nil {
+		return false, err
+	}
+	for _, name := range names {
+		lower := strings.ToLower(name)
+		if strings.HasSuffix(lower, ".save") || strings.HasSuffix(lower, ".save_multiplayer") {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ResolveSyncSubfolder picks the remote path (relative to the configured
+// remote root) that both players should mirror.
+//
+// Rules:
+//   - Guest (shared-folder root): always the remote root. Never create or
+//     append the subfolder name — that is how Shogun2SaveSync/Shogun2SaveSync
+//     nesting used to appear on every re-auth.
+//   - Host: reuse subfolder if it already exists; if the remote root already
+//     holds save files (player shared the folder itself, or a previous guest
+//     session left the remote scoped there), use the root as-is; otherwise
+//     create the subfolder once.
+func ResolveSyncSubfolder(ctx context.Context, remoteName, subfolder string, isGuest bool) (string, error) {
+	if !Installed() {
+		return "", ErrNotInstalled
+	}
+	subfolder = strings.TrimSpace(subfolder)
+	if subfolder == "" {
+		return "", fmt.Errorf("sync folder name is empty")
+	}
+	if isGuest {
+		// If a previous bug nested the folder name under the shared root and
+		// the root itself has no saves, mirror the existing nested folder so
+		// both players still see the campaign. Setup flattens the local side.
+		hasSaves, err := remoteLooksLikeSaveFolder(ctx, remoteName, "")
+		if err != nil {
+			return "", err
+		}
+		if hasSaves {
+			return "", nil
+		}
+		nested, err := remoteHasChild(ctx, remoteName, "", subfolder)
+		if err != nil {
+			return "", err
+		}
+		if nested {
+			// Peel a single same-name nesting level if that is where the saves sit.
+			if ok, err := remoteLooksLikeSaveFolder(ctx, remoteName, subfolder); err == nil && ok {
+				return subfolder, nil
+			}
+			// Walk a few levels of name/name/... left by older builds.
+			path := subfolder
+			for i := 0; i < 8; i++ {
+				next := path + "/" + subfolder
+				ok, err := remoteHasChild(ctx, remoteName, path, subfolder)
+				if err != nil || !ok {
+					break
+				}
+				if saves, err := remoteLooksLikeSaveFolder(ctx, remoteName, next); err == nil && saves {
+					return next, nil
+				}
+				path = next
+			}
+			return subfolder, nil
+		}
+		return "", nil
+	}
+
+	// Host path.
+	hasSaves, err := remoteLooksLikeSaveFolder(ctx, remoteName, "")
+	if err != nil {
+		return "", err
+	}
+	exists, err := remoteHasChild(ctx, remoteName, "", subfolder)
+	if err != nil {
+		return "", err
+	}
+	if exists {
+		return subfolder, nil
+	}
+	if hasSaves {
+		// Remote root already is the sync folder (reused share). Do not create
+		// subfolder/ inside it.
+		return "", nil
+	}
+	if err := EnsureSubfolder(ctx, remoteName, subfolder); err != nil {
+		return "", err
+	}
+	return subfolder, nil
+}
+
 // VerifyAccess does a cheap round-trip against the Drive API (listing the
 // configured root) to confirm the token and root_folder_id actually work,
 // so setup fails loudly here instead of silently later during sync.
@@ -601,12 +737,13 @@ func VerifyAccess(ctx context.Context, remoteName string) error {
 
 // ShareableLink returns a Drive share link for remoteName:subfolder, for
 // the "I own this Drive" flow — the host needs something to actually send
-// their friend after creating the sync folder.
+// their friend after creating the sync folder. subfolder may be empty when
+// the remote root itself is the shared sync folder.
 func ShareableLink(ctx context.Context, remoteName, subfolder string) (string, error) {
 	if !Installed() {
 		return "", ErrNotInstalled
 	}
-	out, err := run(ctx, "link", remoteName+":"+subfolder)
+	out, err := run(ctx, "link", remotePath(remoteName, subfolder))
 	if err != nil {
 		return "", err
 	}

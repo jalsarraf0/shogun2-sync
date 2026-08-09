@@ -62,14 +62,14 @@ func TestServiceConditionEscapesSpecifiersAndDropsUnusablePaths(t *testing.T) {
 	}
 }
 
-// The generated script is what actually runs every two minutes, so its
+// The generated script is what actually runs every 30 seconds, so its
 // shape matters more than most code in this app.
 func TestSyncScriptIsValidShellAndQuotesPaths(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the generated script only ever runs on Linux")
 	}
 	awkward := "/home/o'brien/Google Drive 100%"
-	script := syncScript("/usr/bin/rclone", awkward, "gdrive:Shogun2SaveSync", "/tmp/x.log")
+	script := syncScript("/usr/bin/rclone", awkward, "gdrive:Shogun2SaveSync", "/tmp/x.log", "Shogun2SaveSync")
 
 	// `sh -n` parses without executing: catches any quoting mistake that
 	// would otherwise only show up as a broken timer on someone's machine.
@@ -86,12 +86,15 @@ func TestSyncScriptIsValidShellAndQuotesPaths(t *testing.T) {
 	// A bare `--resync` on any failure would let a transient network error
 	// overwrite the other player's newer saves.
 	for _, want := range []string{
-		`if [ "$status" -eq 7 ] && [ -z "$(ls -A "$LOCAL" 2>/dev/null)" ]; then`,
+		`if [ "$status" -eq 7 ] && [ -z "$(find "$LOCAL" -mindepth 1 -maxdepth 1 \`,
 		"--resync-mode path2",
 		"--resilient",
 		"--recover",
 		"--max-lock 2m",
 		"--conflict-resolve newer",
+		"flatten_nested",
+		".shogun2sync-sync.lock",
+		`"$n" -gt 3`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("script is missing %q:\n%s", want, script)
@@ -123,7 +126,7 @@ func TestScriptDoesNotResyncWhenLocalFolderHasSaves(t *testing.T) {
 	}
 
 	script := dir + "/sync.sh"
-	if err := writeFile(script, syncScript(stub, local, "gdrive:Shogun2SaveSync", dir+"/log")); err != nil {
+	if err := writeFile(script, syncScript(stub, local, "gdrive:Shogun2SaveSync", dir+"/log", "Shogun2SaveSync")); err != nil {
 		t.Fatal(err)
 	}
 
