@@ -1,0 +1,17 @@
+MICROSOFT EDGE WEBVIEW2 RUNTIME - ADDITIONAL TERMS
+
+This installer includes the Microsoft Edge WebView2 Runtime so Shogun 2 Save
+Sync works without a separate download. WebView2 is Microsoft software and is
+not covered by this application's MIT License.
+
+By installing or using the included WebView2 Runtime, you agree to Microsoft's
+Microsoft Edge WebView2 Runtime Software License Terms. A complete offline copy
+of those terms is included in this package as WebView2-LICENSE.html and will be
+installed beside the other application licenses.
+
+The runtime can collect information about use and send it to Microsoft, and it
+can automatically check for, download, and install security updates. Microsoft's
+privacy statement is available at https://aka.ms/privacy.
+
+If you do not agree to the Microsoft terms, cancel setup. Shogun 2 Save Sync
+cannot run on Windows without a compatible WebView2 Runtime.

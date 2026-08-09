@@ -1,4 +1,5 @@
 build/bin
+build/runtime
 node_modules
 frontend/dist
 frontend/package.json.md5

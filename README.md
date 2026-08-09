@@ -23,46 +23,77 @@ Grab the latest release for your OS from the
 
 | Platform | File |
 |---|---|
-| Windows 10/11 (x86-64) | `shogun2sync-windows-amd64.zip` — unzip, run `shogun2sync.exe` |
+| Windows 10/11 (x86-64) | `shogun2sync-windows-amd64-installer.exe` — recommended one-step setup |
 | Debian / Ubuntu | `shogun2sync_<version>_amd64.deb` |
 | Fedora / Nobara | `shogun2sync-<version>-1.x86_64.rpm` |
 | Arch | `shogun2sync-<version>-1-x86_64.pkg.tar.zst`, or build from the `PKGBUILD` attached to the release |
-| Other current Linux (x86-64) | `shogun2sync-linux-amd64.tar.gz` — recommended bundle with the app and its private rclone runtime; install the GTK/WebKit libraries below first |
+| Other supported Linux (x86-64) | `shogun2sync-linux-amd64.run` — single-file automatic installer |
 | Source | `shogun2-sync-<version>-src.tar.gz` |
 
-No installer required for the Windows build — it's a single portable `.exe`.
-It needs the Microsoft Edge WebView2 Runtime, which is already present on most
-Windows 10 systems and included with Windows 11. This release does not include
-a macOS or ARM build.
+On Windows, run the setup `.exe`. It installs the app for the current user,
+adds Start menu and desktop shortcuts, and carries both a private,
+checksum-verified rclone 1.74.4 binary and Microsoft's complete x64
+WebView2 Evergreen Standalone Runtime, so a missing runtime is installed even
+when the computer is offline. No separate dependency download is required.
+The uninstaller removes everything it installed, including that private
+rclone. This release does not include a macOS or ARM build.
 
-The Linux packages target distributions with the WebKit2GTK 4.1 ABI: Debian
-12 / Ubuntu 24.04 or newer, Fedora 40 or newer (including current Nobara), and
-current Arch Linux. The `.deb`, `.rpm`, and Arch packages install GTK 3,
-WebKit2GTK 4.1 through the native package manager and include a private,
-checksum-verified rclone 1.74.4 binary for Google Drive syncing. If you use the
-Linux tarball, install the equivalent GUI libraries yourself:
+The Linux artifacts target Debian 12, Ubuntu 24.04 or newer, currently
+supported Fedora/Nobara releases, and current Arch Linux. There are two shapes,
+and they make opposite trade-offs on purpose. Installing the `.deb`, `.rpm`, or
+Arch package through the native software installer resolves GTK 3, WebKit2GTK
+4.1, certificates, systemd, and desktop-browser integration in the same
+transaction, which keeps WebKit on your distribution's security updates — this
+is the better choice whenever you have repository access. The generic `.run`
+instead bundles that GUI stack so it can install with no repositories at all.
+Every Linux artifact carries the app-owned pieces itself: a private,
+checksum-verified rclone 1.74.4 binary, menu entry, icon, and all applicable
+license notices.
+
+Use the dependency-resolving installer for your distribution (double-clicking
+the package in its graphical software installer does the same thing):
 
 ```bash
-# Debian / Ubuntu
-# WebKit pulls in the correctly named GTK 3 runtime for your release
-sudo apt install libwebkit2gtk-4.1-0
-
-# Fedora / Nobara
-sudo dnf install gtk3 webkit2gtk4.1
-
-# Arch Linux
-sudo pacman -S gtk3 webkit2gtk-4.1
+sudo apt install ./shogun2sync_<version>_amd64.deb
+sudo dnf install ./shogun2sync-<version>-1.x86_64.rpm
+sudo pacman -U ./shogun2sync-<version>-1-x86_64.pkg.tar.zst
 ```
 
-Unpack the recommended raw bundle and run `shogun2sync` from inside its
-directory; keep the sibling `rclone` file with it. The older lone
-`shogun2sync-linux-amd64` artifact remains available for compatibility, but it
-requires rclone 1.71 or newer to be installed separately and available on
-`PATH` when using Google Drive.
+For the generic fallback, run the one file. It needs no package manager, no
+repository access, and no network connection: it carries its own GTK 3 and
+WebKitGTK 4.1 stack alongside the app, menu entry, icon, notices, and rclone,
+and installs them under `/opt/shogun2sync` in one pass:
+
+```bash
+sh shogun2sync-linux-amd64.run
+```
+
+The bundled runtime deliberately stops short of the pieces that must belong to
+your machine — glibc, the graphics driver, X11/Wayland, and fontconfig — so it
+uses your own GPU acceleration and fonts. Every graphical desktop already has
+these; the installer checks for them and says so plainly if any are missing.
+
+The bundled copy of `libwebkit2gtk-4.1.so.0` has one modification: WebKitGTK
+compiles the path of its helper processes into the library with no runtime
+override, so that path is rewritten to point inside the install prefix. This is
+recorded, with the corresponding-source information the LGPL requires, in
+`/usr/local/share/licenses/shogun2sync/WEBKITGTK-NOTICE.txt`.
+
+The installer asks for `sudo` only when copying application files; it never
+runs the app as root. To uninstall, run the `.run` file with `-- --uninstall`.
+It stops your Google sync timer, removes only application files, and leaves
+saves, cloud data, and settings alone:
+
+```bash
+sh shogun2sync-linux-amd64.run -- --uninstall
+```
 
 Every release also ships a `SHA256SUMS` file. To check what you
 downloaded, put it beside the artifacts and run
 `sha256sum -c --ignore-missing SHA256SUMS`.
+The release workflow also publishes GitHub/Sigstore provenance attestations;
+`gh attestation verify <downloaded-file> -R jalsarraf0/shogun2-sync` confirms
+which repository, commit, and workflow produced an installer.
 
 ## Quick start
 
@@ -94,11 +125,13 @@ downloaded, put it beside the artifacts and run
   directly (native OAuth flow, real browser login) and runs
   [`rclone`](https://rclone.org) `bisync` on a background timer to
   maintain a real local mirror — a live network mount would risk the
-  exact write failures a streaming client has. The Linux packages and
-  recommended tarball bundle rclone 1.74.4, so they also work on Ubuntu and
-  Debian releases whose repositories ship an older version. Only the legacy
-  lone-binary artifact and source development require a separate rclone 1.71
-  or newer. Dropbox and OneDrive do not use `rclone`.
+  exact write failures a streaming client has. Every installer — the Windows
+  setup `.exe`, the Linux packages, and the one-file installer — bundles
+  rclone 1.74.4 and runs that private copy, so they also work on Ubuntu and
+  Debian releases whose repositories ship an older version, and on a Windows
+  machine with nothing else installed. Only source
+  development requires a separate rclone 1.71 or newer. Dropbox and OneDrive
+  do not use `rclone`.
   The wizard asks whether you're the one who received a shared folder
   link, or the one sharing your own Drive — the host path needs no
   link at all and hands you back a shareable link to send afterward.
@@ -147,12 +180,24 @@ wails build -platform windows/amd64 # Windows (cross-compiles cleanly, no mingw 
 ```
 
 `app/packaging/build-release.sh <version>` builds every release artifact
-(Windows zip, `.deb`, `.rpm`, Arch package, source tarball) into `dist/`.
-Release builds additionally require nFPM 2.47.0, `curl`, `unzip`, `zip`,
-`sha256sum`, network access to `downloads.rclone.org`, and a clean Git checkout;
-the supplied version must match both `app/wails.json` and the `PKGBUILD`. The
-release builder checks rclone's official `SHA256SUMS` manifest against a pinned
-checksum before putting its binary and MIT notice into any artifact.
+(offline Windows installer, Linux installer bundle, `.deb`, `.rpm`, Arch
+package, and source tarball) into `dist/`.
+Release builds additionally require Docker or Podman, nFPM 2.47.0, NSIS
+(`makensis`), `curl`, `jq`, `unzip`, `sha256sum`, OpenSSL, `osslsigncode`,
+network access to the official Go, Makeself, rclone, and Microsoft download
+hosts, and a clean Git checkout; release
+verification also uses `7z`, `dpkg-deb`, `rpm`, and Zstandard-enabled `tar`.
+The supplied version must match both `app/wails.json` and the `PKGBUILD`. The
+builder verifies pinned SHA-256 checksums for both rclone builds, the complete offline
+WebView2 runtime, and Microsoft's root certificate, then verifies WebView2's
+primary Authenticode signer. A second gate inspects every finished
+installer/package for its runtime declarations, bundled executables, licenses,
+desktop integration, and checksums before the release is published. Pull-request
+CI also performs real package-manager installs in clean Debian, Ubuntu, Fedora,
+and Arch containers, and installs, launches, and uninstalls the final setup on
+a Windows runner. The shared Linux executable is built in a digest-pinned Debian
+12 container—the oldest supported ABI baseline—before that identical executable
+is placed into every Linux format.
 
 ## Repo layout
 
@@ -171,4 +216,6 @@ legacy-scripts/          the original bash/PowerShell scripts this app replaced
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+The Shogun 2 Save Sync source is MIT — see [LICENSE](LICENSE). Distributed
+installers also carry the separate terms and notices for their bundled rclone,
+Go/Wails modules, and Microsoft WebView2 runtime.

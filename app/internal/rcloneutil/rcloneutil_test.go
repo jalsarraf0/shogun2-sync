@@ -293,28 +293,124 @@ func TestValidateRemoteName(t *testing.T) {
 }
 
 func TestResolveRclonePathPriority(t *testing.T) {
+	// The Windows installer and the portable Linux archive both place rclone
+	// beside the app, so a regression here means a freshly installed machine
+	// silently cannot sync.
+	const (
+		privatePath = "/usr/lib/shogun2sync/rclone"
+		pathResult  = "/from/PATH/rclone"
+	)
 	dir := t.TempDir()
-	executable := filepath.Join(dir, "shogun2sync")
-	sibling := filepath.Join(dir, "rclone")
-	private := filepath.Join(dir, "private-rclone")
-	executableFiles := map[string]bool{sibling: true, private: true}
-	isExecutable := func(path string) bool {
-		return executableFiles[path]
+	tests := []struct {
+		name string
+		goos string
+		// executable and siblings are basenames inside dir.
+		executable    string
+		siblings      []string
+		privateExists bool
+		want          string
+	}{
+		{
+			name:       "windows uses the bundled sibling rclone.exe",
+			goos:       "windows",
+			executable: "shogun2sync.exe",
+			siblings:   []string{"rclone.exe"},
+			want:       filepath.Join(dir, "rclone.exe"),
+		},
+		{
+			name:       "windows falls back to PATH without a sibling",
+			goos:       "windows",
+			executable: "shogun2sync.exe",
+			want:       pathResult,
+		},
+		{
+			name:       "windows ignores an extensionless sibling",
+			goos:       "windows",
+			executable: "shogun2sync.exe",
+			siblings:   []string{"rclone"},
+			want:       pathResult,
+		},
+		{
+			name:          "windows never uses the Linux private path",
+			goos:          "windows",
+			executable:    "shogun2sync.exe",
+			privateExists: true,
+			want:          pathResult,
+		},
+		{
+			name:          "linux prefers the sibling over the private path",
+			goos:          "linux",
+			executable:    "shogun2sync",
+			siblings:      []string{"rclone"},
+			privateExists: true,
+			want:          filepath.Join(dir, "rclone"),
+		},
+		{
+			name:          "linux uses the packaged private path",
+			goos:          "linux",
+			executable:    "shogun2sync",
+			privateExists: true,
+			want:          privatePath,
+		},
+		{
+			name:       "linux falls back to PATH last",
+			goos:       "linux",
+			executable: "shogun2sync",
+			want:       pathResult,
+		},
 	}
-	lookPath := func(string) (string, error) { return "/from/PATH/rclone", nil }
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			executableFiles := make(map[string]bool, len(tt.siblings)+1)
+			for _, sibling := range tt.siblings {
+				executableFiles[filepath.Join(dir, sibling)] = true
+			}
+			if tt.privateExists {
+				executableFiles[privatePath] = true
+			}
+			got, err := resolveRclonePathWithCheck(
+				tt.goos,
+				filepath.Join(dir, tt.executable),
+				privatePath,
+				func(string) (string, error) { return pathResult, nil },
+				func(path string) bool { return executableFiles[path] },
+			)
+			if err != nil || got != tt.want {
+				t.Fatalf("resolveRclonePathWithCheck(%q) = (%q, %v), want %q", tt.goos, got, err, tt.want)
+			}
+		})
+	}
+}
 
-	got, err := resolveRclonePathWithCheck("linux", executable, private, lookPath, isExecutable)
-	if err != nil || got != sibling {
-		t.Fatalf("Linux sibling resolution = (%q, %v), want %q", got, err, sibling)
+func TestExecutableFileCheckerHonoursWindowsFilePermissions(t *testing.T) {
+	// os.Stat on Windows derives the mode from file attributes and never
+	// reports POSIX execute bits, so a shared 0111 check would reject the
+	// rclone.exe the installer just wrote next to the app.
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "rclone.exe")
+	if err := os.WriteFile(binary, []byte("MZ"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	delete(executableFiles, sibling)
-	got, err = resolveRclonePathWithCheck("linux", executable, private, lookPath, isExecutable)
-	if err != nil || got != private {
-		t.Fatalf("Linux private resolution = (%q, %v), want %q", got, err, private)
+	if !executableFileChecker("windows")(binary) {
+		t.Fatal("windows check rejected a regular file without POSIX execute bits")
 	}
-	got, err = resolveRclonePathWithCheck("windows", executable, private, lookPath, isExecutable)
-	if err != nil || got != "/from/PATH/rclone" {
-		t.Fatalf("non-Linux resolution = (%q, %v), want PATH", got, err)
+	if executableFileChecker("windows")(dir) {
+		t.Fatal("windows check accepted a directory")
+	}
+	if executableFileChecker("linux")(binary) {
+		t.Fatal("linux check accepted a file with no execute bit")
+	}
+	if executableFileChecker("windows")(filepath.Join(dir, "absent.exe")) {
+		t.Fatal("windows check accepted a missing file")
+	}
+}
+
+func TestRcloneBinaryName(t *testing.T) {
+	tests := map[string]string{"windows": "rclone.exe", "linux": "rclone", "darwin": "rclone"}
+	for goos, want := range tests {
+		if got := rcloneBinaryName(goos); got != want {
+			t.Errorf("rcloneBinaryName(%q) = %q, want %q", goos, got, want)
+		}
 	}
 }
 

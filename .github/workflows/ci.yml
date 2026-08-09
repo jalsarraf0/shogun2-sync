@@ -5,6 +5,8 @@ env:
   NODE_VERSION: "22.23.2"
   NPM_VERSION: "10.9.8"
   WAILS_VERSION: "v2.13.0"
+  NFPM_VERSION: "v2.47.0"
+  ACTIONLINT_VERSION: "v1.7.12"
 
 on:
   push:
@@ -41,19 +43,33 @@ jobs:
           rclone_version="$(sed -n 's/^RCLONE_VERSION="\([^"]*\)"/\1/p' app/packaging/build-release.sh)"
           pkgbuild_rclone_version="$(sed -n 's/^_rclonever=\(.*\)$/\1/p' app/packaging/PKGBUILD)"
           rclone_checksum="$(sed -n 's/^RCLONE_ARCHIVE_SHA256="\([^"]*\)"/\1/p' app/packaging/build-release.sh)"
+          rclone_windows_checksum="$(sed -n 's/^RCLONE_WINDOWS_ARCHIVE_SHA256="\([^"]*\)"/\1/p' app/packaging/build-release.sh)"
           rclone_copying_checksum="$(sed -n 's/^RCLONE_COPYING_SHA256="\([^"]*\)"/\1/p' app/packaging/build-release.sh)"
           echo "wails.json=$wails_version PKGBUILD=$pkgbuild_version"
           echo "rclone release=$rclone_version PKGBUILD=$pkgbuild_rclone_version"
           [ "$wails_version" = "$pkgbuild_version" ]
           [ "$rclone_version" = "$pkgbuild_rclone_version" ]
           grep -Fq "$rclone_checksum" app/packaging/PKGBUILD
+          # The Windows rclone archive has no PKGBUILD counterpart to compare
+          # against, so guard the constant itself. A dropped or copy-pasted
+          # Linux digest would otherwise only surface mid-release; the real
+          # download is verified against rclone's manifest in
+          # build-windows-cross.
+          printf '%s' "$rclone_windows_checksum" | grep -Eq '^[0-9a-f]{64}$'
+          [ "$rclone_windows_checksum" != "$rclone_checksum" ]
           printf '%s  %s\n' "$rclone_copying_checksum" app/packaging/rclone-COPYING | sha256sum --check --strict -
           grep -Fq "github.com/wailsapp/wails/v2 $WAILS_VERSION" app/go.mod
 
       - name: Install WebKitGTK/GTK build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev
+          sudo apt-get install -y desktop-file-utils libwebkit2gtk-4.1-dev libgtk-3-dev shellcheck
+
+      - name: Validate packaging scripts and desktop integration
+        run: |
+          shellcheck app/packaging/*.sh
+          desktop-file-validate app/packaging/shogun2sync.desktop
+          go run "github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_VERSION}"
 
       - name: Build frontend
         # go:embed all:frontend/dist requires this to exist before `go vet`
@@ -77,6 +93,39 @@ jobs:
         working-directory: app
         run: go mod tidy -diff
 
+      - name: Smoke-test portable Linux installer
+        run: |
+          bash -n app/packaging/install-linux.sh
+          bundle="$(mktemp -d)"
+          stage="$(mktemp -d)"
+          trap 'rm -rf "$bundle" "$stage"' EXIT
+          install -m755 /bin/true "$bundle/shogun2sync"
+          install -m755 /bin/true "$bundle/rclone"
+          install -m644 LICENSE "$bundle/LICENSE"
+          install -m644 app/packaging/rclone-COPYING "$bundle/rclone-COPYING"
+          install -m644 LICENSE "$bundle/GO-THIRD-PARTY-NOTICES.txt"
+          install -m644 app/packaging/shogun2sync.desktop "$bundle/shogun2sync.desktop"
+          install -m644 app/packaging/appicon-512.png "$bundle/appicon-512.png"
+          install -m755 app/packaging/install-linux.sh "$bundle/install.sh"
+          mkdir -p "$bundle/runtime/lib" "$bundle/runtime/share"
+          install -m755 /bin/true "$bundle/runtime/shogun2sync.sh"
+          install -m644 LICENSE "$bundle/runtime/WEBKITGTK-NOTICE.txt"
+          SHOGUN2SYNC_INSTALL_ROOT="$stage" "$bundle/install.sh"
+          test -x "$stage/opt/shogun2sync/shogun2sync"
+          test -x "$stage/opt/shogun2sync/rclone"
+          test -x "$stage/opt/shogun2sync/shogun2sync.sh"
+          test -d "$stage/opt/shogun2sync/lib"
+          test -f "$stage/usr/local/share/licenses/shogun2sync/WEBKITGTK-NOTICE.txt"
+          test -L "$stage/usr/local/bin/shogun2sync"
+          # The launcher, not the raw binary, must be what a user invokes.
+          grep -Fxq 'Exec=/opt/shogun2sync/shogun2sync.sh' \
+            "$stage/usr/local/share/applications/shogun2sync.desktop"
+          [ "$(readlink "$stage/usr/local/bin/shogun2sync")" \
+            = /opt/shogun2sync/shogun2sync.sh ]
+          SHOGUN2SYNC_INSTALL_ROOT="$stage" "$bundle/install.sh" --uninstall
+          test ! -e "$stage/usr/local/bin/shogun2sync"
+          test ! -e "$stage/opt/shogun2sync"
+
       - name: Vet
         working-directory: app
         run: go vet ./...
@@ -92,12 +141,116 @@ jobs:
         working-directory: app
         run: go test -race ./...
 
-      - name: Install Wails CLI
-        run: go install "github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}"
+      - name: Build on the Debian 12 compatibility baseline
+        run: app/packaging/build-linux-bookworm.sh
 
-      - name: Build (Linux)
-        working-directory: app
-        run: $(go env GOPATH)/bin/wails build -m -nosyncgomod -tags webkit2_41
+      # The generic installer carries its own GTK/WebKitGTK so it can install
+      # without distribution repositories. Only the .run uses this; the native
+      # deb/rpm/Arch packages keep depending on distro WebKit.
+      - name: Build the bundled Linux GUI runtime
+        run: app/packaging/build-linux-runtime.sh
+
+      - name: Build and verify every Linux package
+        run: |
+          sudo apt-get install -y cpio rpm zstd
+          go install "github.com/goreleaser/nfpm/v2/cmd/nfpm@${NFPM_VERSION}"
+          package_dir="$(mktemp -d)"
+          rclone_dir="$(mktemp -d)"
+          trap 'rm -rf "$package_dir" "$rclone_dir"' EXIT
+          rclone_version="$(sed -n 's/^RCLONE_VERSION="\([^"]*\)"/\1/p' app/packaging/build-release.sh)"
+          rclone_archive="rclone-v${rclone_version}-linux-amd64.zip"
+          rclone_checksum="$(sed -n 's/^RCLONE_ARCHIVE_SHA256="\([^"]*\)"/\1/p' app/packaging/build-release.sh)"
+          curl --fail --location --silent --show-error \
+            --output "$rclone_dir/$rclone_archive" \
+            "https://downloads.rclone.org/v${rclone_version}/$rclone_archive"
+          printf '%s  %s\n' "$rclone_checksum" "$rclone_dir/$rclone_archive" \
+            | sha256sum --check --strict -
+          unzip -q "$rclone_dir/$rclone_archive" -d "$rclone_dir"
+          install -Dm755 \
+            "$rclone_dir/rclone-v${rclone_version}-linux-amd64/rclone" \
+            app/build/bin/rclone
+          app/packaging/collect-go-notices.sh \
+            app/build/bin/GO-THIRD-PARTY-NOTICES.txt \
+            app/build/bin/shogun2sync
+          version="$(sed -n 's/.*"productVersion"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' app/wails.json)"
+          export VERSION="$version"
+          for packager in deb rpm archlinux; do
+            (cd app && "$(go env GOPATH)/bin/nfpm" package \
+              --config packaging/nfpm.yaml \
+              --packager "$packager" --target "$package_dir/")
+          done
+          app/packaging/verify-linux-packages.sh "$version" "$package_dir"
+
+          app/packaging/build-linux-installer.sh \
+            "$package_dir/shogun2sync-linux-amd64.run"
+          linux_extract="$(mktemp -d)"
+          trap 'rm -rf "$package_dir" "$rclone_dir" "$linux_extract"' EXIT
+          sh "$package_dir/shogun2sync-linux-amd64.run" \
+            --quiet --target "$linux_extract" --noexec
+          for file in shogun2sync rclone install.sh LICENSE rclone-COPYING \
+              GO-THIRD-PARTY-NOTICES.txt shogun2sync.desktop appicon-512.png \
+              runtime/shogun2sync.sh runtime/WEBKITGTK-NOTICE.txt \
+              runtime/lib/libwebkit2gtk-4.1.so.0 runtime/lib/libgtk-3.so.0 \
+              runtime/lib/webkit2gtk-4.1/WebKitWebProcess \
+              runtime/lib/webkit2gtk-4.1/WebKitNetworkProcess \
+              runtime/lib/gio/modules/libgiognutls.so \
+              runtime/share/glib-2.0/schemas/gschemas.compiled; do
+            test -s "$linux_extract/$file"
+          done
+          # Shipping the host's glibc or graphics stack is what makes a bundle
+          # fail on a foreign distribution, so prove none of it came along.
+          for forbidden in libc.so.6 libstdc++.so.6 libGL.so.1 libX11.so.6 \
+              libfontconfig.so.1 ld-linux-x86-64.so.2; do
+            test ! -e "$linux_extract/runtime/lib/$forbidden"
+          done
+
+          # Metadata and file lists cannot show that the bundle actually works
+          # without repositories. Install and launch it with networking off.
+          app/packaging/verify-linux-offline.sh \
+            "$package_dir/shogun2sync-linux-amd64.run"
+
+          # Metadata checks cannot prove that a native package manager can
+          # resolve the full dependency closure. Install each final artifact
+          # in a fresh supported distribution and inspect the installed app.
+          docker run --rm -v "$package_dir:/packages:ro" debian:12 bash -euxc '
+            apt-get update
+            apt-get install -y /packages/shogun2sync_*.deb
+            command -v xdg-open
+            command -v systemctl
+            ldd /usr/bin/shogun2sync | tee /tmp/ldd
+            ! grep -Fq "not found" /tmp/ldd
+            /usr/lib/shogun2sync/rclone version | grep -Fq "rclone v1.74.4"
+          '
+          docker run --rm -v "$package_dir:/packages:ro" ubuntu:24.04 bash -euxc '
+            apt-get update
+            apt-get install -y /packages/shogun2sync_*.deb
+            command -v xdg-open
+            command -v systemctl
+            ldd /usr/bin/shogun2sync | tee /tmp/ldd
+            ! grep -Fq "not found" /tmp/ldd
+            /usr/lib/shogun2sync/rclone version | grep -Fq "rclone v1.74.4"
+          '
+          docker run --rm -v "$package_dir:/packages:ro" fedora:44 bash -euxc '
+            dnf install -y /packages/shogun2sync-*.rpm
+            command -v xdg-open
+            command -v systemctl
+            ldd /usr/bin/shogun2sync | tee /tmp/ldd
+            ! grep -Fq "not found" /tmp/ldd
+            /usr/lib/shogun2sync/rclone version | grep -Fq "rclone v1.74.4"
+          '
+          docker run --rm -v "$package_dir:/packages:ro" archlinux:latest bash -euxc '
+            # The base image ships no package database, so pacman -U alone
+            # cannot resolve gtk3 or webkit2gtk-4.1. Arch does not support
+            # partial upgrades, so refresh and upgrade in one transaction
+            # before installing, exactly as a real user would.
+            pacman -Syu --noconfirm
+            pacman -U --noconfirm /packages/shogun2sync-*.pkg.tar.zst
+            command -v xdg-open
+            command -v systemctl
+            ldd /usr/bin/shogun2sync | tee /tmp/ldd
+            ! grep -Fq "not found" /tmp/ldd
+            /usr/lib/shogun2sync/rclone version | grep -Fq "rclone v1.74.4"
+          '
 
   # Half of what this app does is Windows-specific — directory junctions,
   # reparse points, %APPDATA% paths, file:// URLs with drive letters — and
@@ -162,8 +315,129 @@ jobs:
       - name: Install Wails CLI
         run: go install "github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}"
 
-      - name: Cross-compile Windows build
-        working-directory: app
+      - name: Install offline-installer tools
+        run: sudo apt-get update && sudo apt-get install -y 7zip jq nsis osslsigncode
+
+      # The Windows installer must carry rclone: there is no package manager
+      # on Windows to resolve it later. Fetch it exactly the way the release
+      # builder does — pinned digest cross-checked against rclone's published
+      # manifest — so PR CI builds the same payload a tag would.
+      - name: Fetch verified rclone for Windows
         run: |
-          npm ci --prefix frontend
-          $(go env GOPATH)/bin/wails build -m -nosyncgomod -platform windows/amd64
+          rclone_dir="$(mktemp -d)"
+          trap 'rm -rf "$rclone_dir"' EXIT
+          rclone_version="$(sed -n 's/^RCLONE_VERSION="\([^"]*\)"/\1/p' app/packaging/build-release.sh)"
+          rclone_checksum="$(sed -n 's/^RCLONE_WINDOWS_ARCHIVE_SHA256="\([^"]*\)"/\1/p' app/packaging/build-release.sh)"
+          rclone_archive="rclone-v${rclone_version}-windows-amd64.zip"
+          base_url="https://downloads.rclone.org/v${rclone_version}"
+          curl --fail --location --silent --show-error \
+            --output "$rclone_dir/$rclone_archive" "$base_url/$rclone_archive"
+          curl --fail --location --silent --show-error \
+            --output "$rclone_dir/SHA256SUMS" "$base_url/SHA256SUMS"
+          manifest_checksum="$(awk -v archive="$rclone_archive" \
+            '$2 == archive { print $1 }' "$rclone_dir/SHA256SUMS")"
+          [ "$manifest_checksum" = "$rclone_checksum" ]
+          printf '%s  %s\n' "$rclone_checksum" "$rclone_dir/$rclone_archive" \
+            | sha256sum --check --strict -
+          unzip -q "$rclone_dir/$rclone_archive" -d "$rclone_dir"
+          install -Dm755 \
+            "$rclone_dir/rclone-v${rclone_version}-windows-amd64/rclone.exe" \
+            app/build/bin/rclone.exe
+
+      - name: Build and inspect offline Windows installer
+        run: |
+          npm ci --prefix app/frontend
+          PATH="$(go env GOPATH)/bin:$PATH" app/packaging/build-windows-installer.sh
+
+      - name: Save final Windows installer for install test
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-offline-installer
+          path: app/build/bin/shogun2sync-amd64-installer.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  install-windows:
+    needs: build-windows-cross
+    runs-on: windows-2022
+    steps:
+      - name: Download final Windows installer
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-offline-installer
+          path: installer
+
+      - name: Install, launch, and uninstall the final package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Resolve-Path 'installer/shogun2sync-amd64-installer.exe').Path
+          $installDir = Join-Path $env:LOCALAPPDATA 'Programs/Shogun 2 Save Sync'
+
+          $result = Start-Process -FilePath $setup -ArgumentList '/S' -Wait -PassThru
+          if ($result.ExitCode -ne 0) {
+            throw "Installer exited with code $($result.ExitCode)"
+          }
+
+          @(
+            'shogun2sync.exe',
+            'rclone.exe',
+            'uninstall.exe',
+            'LICENSE.txt',
+            'rclone-COPYING.txt',
+            'WebView2-LICENSE.html',
+            'GO-THIRD-PARTY-NOTICES.txt'
+          ) | ForEach-Object {
+            $path = Join-Path $installDir $_
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Installed payload is missing: $path"
+            }
+          }
+
+          # The app resolves rclone beside its own executable, so prove the
+          # installed copy actually runs and is the pinned build rather than
+          # whatever happened to be on the runner's PATH.
+          $rcloneVersion = (& (Join-Path $installDir 'rclone.exe') version) -join "`n"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installed rclone.exe exited with code $LASTEXITCODE"
+          }
+          if ($rcloneVersion -notmatch 'rclone v1\.74\.4') {
+            throw "Installed rclone.exe is not the pinned version: $rcloneVersion"
+          }
+
+          $startShortcut = Join-Path $env:APPDATA 'Microsoft/Windows/Start Menu/Programs/Shogun 2 Save Sync.lnk'
+          $desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Shogun 2 Save Sync.lnk'
+          foreach ($shortcut in @($startShortcut, $desktopShortcut)) {
+            if (-not (Test-Path -LiteralPath $shortcut -PathType Leaf)) {
+              throw "Installed shortcut is missing: $shortcut"
+            }
+          }
+          $uninstallRecord = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
+            Where-Object DisplayName -eq 'Shogun 2 Save Sync'
+          if (-not $uninstallRecord) {
+            throw 'Current-user uninstall record is missing'
+          }
+
+          $app = Start-Process -FilePath (Join-Path $installDir 'shogun2sync.exe') -PassThru
+          Start-Sleep -Seconds 10
+          if ($app.HasExited) {
+            throw "Installed application exited during its launch smoke test with code $($app.ExitCode)"
+          }
+          Stop-Process -Id $app.Id -Force
+          $app.WaitForExit()
+
+          $uninstaller = Join-Path $installDir 'uninstall.exe'
+          $result = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
+          if ($result.ExitCode -ne 0) {
+            throw "Uninstaller exited with code $($result.ExitCode)"
+          }
+          foreach ($leftover in @('shogun2sync.exe', 'rclone.exe', 'rclone-COPYING.txt')) {
+            if (Test-Path -LiteralPath (Join-Path $installDir $leftover)) {
+              throw "Installed payload remains after uninstall: $leftover"
+            }
+          }
+          foreach ($shortcut in @($startShortcut, $desktopShortcut)) {
+            if (Test-Path -LiteralPath $shortcut) {
+              throw "Shortcut remains after uninstall: $shortcut"
+            }
+          }

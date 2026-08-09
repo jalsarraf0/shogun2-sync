@@ -52,38 +52,67 @@ var (
 // ErrNotInstalled is returned when the rclone binary can't be found.
 var ErrNotInstalled = errors.New("rclone is not installed")
 
-// Path returns the rclone executable this app should use. Linux releases
-// carry a private copy so distro rclone versions cannot silently be too old
-// for the sync engine. A sibling binary supports the raw portable archive;
-// the fixed lib path supports installed packages. PATH remains a convenient
-// development fallback and is the only lookup used on other operating
-// systems.
+// Path returns the rclone executable this app should use. Every installer
+// carries its own copy so a distro's rclone cannot silently be too old for
+// the sync engine, and so a fresh Windows machine with nothing else on it
+// can sync immediately. The sibling binary is that bundled copy — it covers
+// the Windows installer and the portable Linux archive alike; the fixed lib
+// path additionally covers Linux native packages. PATH remains a convenient
+// development fallback and is the last resort everywhere.
 func Path() (string, error) {
 	executable, _ := os.Executable()
 	return resolveRclonePath(runtime.GOOS, executable, "/usr/lib/shogun2sync/rclone", exec.LookPath)
 }
 
 func resolveRclonePath(goos, executable, privatePath string, lookPath func(string) (string, error)) (string, error) {
-	return resolveRclonePathWithCheck(goos, executable, privatePath, lookPath, isExecutableFile)
+	return resolveRclonePathWithCheck(goos, executable, privatePath, lookPath, executableFileChecker(goos))
 }
 
+// goos is a parameter rather than runtime.GOOS so the whole resolution order
+// is testable from any host.
 func resolveRclonePathWithCheck(goos, executable, privatePath string, lookPath func(string) (string, error), executableFile func(string) bool) (string, error) {
-	if goos == "linux" {
-		if executable != "" {
-			sibling := filepath.Join(filepath.Dir(executable), "rclone")
-			if executableFile(sibling) {
-				return sibling, nil
-			}
-		}
-		if executableFile(privatePath) {
-			return privatePath, nil
+	if executable != "" {
+		sibling := filepath.Join(filepath.Dir(executable), rcloneBinaryName(goos))
+		if executableFile(sibling) {
+			return sibling, nil
 		}
 	}
+	// Only Linux native packages own a fixed lib path. Probing an absolute
+	// POSIX path on Windows could only ever match something unrelated.
+	if goos == "linux" && executableFile(privatePath) {
+		return privatePath, nil
+	}
+	// exec.LookPath applies PATHEXT on Windows, so the extensionless name
+	// still finds rclone.exe for developers who installed it themselves.
 	path, err := lookPath("rclone")
 	if err != nil {
 		return "", ErrNotInstalled
 	}
 	return path, nil
+}
+
+func rcloneBinaryName(goos string) string {
+	if goos == "windows" {
+		return "rclone.exe"
+	}
+	return "rclone"
+}
+
+// executableFileChecker picks how "this file can be executed" is decided.
+// Windows has no POSIX execute bit — os.Stat reports 0666 (or 0444 when the
+// read-only attribute is set) for every regular file — so requiring 0111
+// there would reject the rclone.exe our own installer ships. On Windows the
+// .exe extension in the looked-up name is the executability marker.
+func executableFileChecker(goos string) func(string) bool {
+	if goos == "windows" {
+		return isRegularFile
+	}
+	return isExecutableFile
+}
+
+func isRegularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 func isExecutableFile(path string) bool {

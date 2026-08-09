@@ -33,6 +33,90 @@ Unicode true
 ## Include the wails tools
 ####
 !include "wails_tools.nsh"
+!include "WordFunc.nsh"
+!insertmacro VersionCompare
+!define WEBVIEW2_MINIMUM_VERSION "94.0.992.31"
+
+# Wails' stock macro starts the Microsoft bootstrapper but ignores its exit
+# status, so setup can report success even when the required runtime failed.
+# Keep the same per-machine/per-user detection while making failure visible.
+# Microsoft documents the registry version as the authoritative check for an
+# installed runtime, per-machine first and then per-user. Jumps to webview_ok,
+# which the including macro defines.
+!macro shogun2sync.webview2registrycheck
+    ReadRegStr $0 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+    ${If} $0 != ""
+    ${AndIf} $0 != "0.0.0.0"
+        ${VersionCompare} "$0" "${WEBVIEW2_MINIMUM_VERSION}" $1
+        ${If} $1 != 2
+            Goto webview_ok
+        ${EndIf}
+    ${EndIf}
+
+    ReadRegStr $0 HKCU "Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+    ${If} $0 != ""
+    ${AndIf} $0 != "0.0.0.0"
+        ${VersionCompare} "$0" "${WEBVIEW2_MINIMUM_VERSION}" $1
+        ${If} $1 != 2
+            Goto webview_ok
+        ${EndIf}
+    ${EndIf}
+!macroend
+
+# Reports a fatal condition. MessageBox is not suppressed by /S, so a silent
+# install that hit one of these would hang on a dialog nobody can click.
+!macro shogun2sync.webview2fail message
+    SetDetailsPrint both
+    DetailPrint "${message}"
+    ${IfNot} ${Silent}
+        MessageBox MB_OK|MB_ICONSTOP "${message}"
+    ${EndIf}
+!macroend
+
+!macro shogun2sync.webview2runtime
+    SetRegView 64
+    !insertmacro shogun2sync.webview2registrycheck
+
+    SetDetailsPrint both
+    DetailPrint "Installing: Microsoft Edge WebView2 Runtime"
+    SetDetailsPrint listonly
+    InitPluginsDir
+    CreateDirectory "$pluginsdir\webview2bootstrapper"
+    SetOutPath "$pluginsdir\webview2bootstrapper"
+    File "tmp\MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
+    ClearErrors
+    ExecWait '"$pluginsdir\webview2bootstrapper\MicrosoftEdgeWebView2RuntimeInstallerX64.exe" /silent /install' $2
+    ${If} ${Errors}
+        !insertmacro shogun2sync.webview2fail "Windows could not start the bundled WebView2 setup. Restart Windows and run this installer again."
+        SetErrorLevel 1
+        Abort
+    ${EndIf}
+    SetDetailsPrint both
+
+    # Do not trust a subprocess exit alone: Microsoft documents the registry
+    # version as the authoritative installed-runtime check, and setup is known
+    # to return before it has finished (WebView2Feedback issue 1349). Poll for a
+    # minute so a slow machine is not failed for a race, and so an "already
+    # installed" nonzero exit is not treated as fatal.
+    StrCpy $3 0
+    webview_poll:
+    !insertmacro shogun2sync.webview2registrycheck
+    IntOp $3 $3 + 1
+    ${If} $3 < 30
+        Sleep 2000
+        Goto webview_poll
+    ${EndIf}
+
+    !insertmacro shogun2sync.webview2fail "The bundled offline WebView2 setup did not install the required runtime (setup exit code $2). Restart Windows and run setup again."
+    ${If} $2 == 0
+        SetErrorLevel 1
+    ${Else}
+        SetErrorLevel $2
+    ${EndIf}
+    Abort
+
+    webview_ok:
+!macroend
 
 # The version information for this two must consist of 4 parts
 VIProductVersion "${INFO_PRODUCTVERSION}.0"
@@ -54,10 +138,12 @@ ManifestDPIAware true
 !define MUI_UNICON "..\icon.ico"
 # !define MUI_WELCOMEFINISHPAGE_BITMAP "resources\leftimage.bmp" #Include this to add a bitmap on the left side of the Welcome Page. Must be a size of 164x314
 !define MUI_FINISHPAGE_NOAUTOCLOSE # Wait on the INSTFILES page so the user can take a look into the details of the installation steps
+!define MUI_FINISHPAGE_RUN "$INSTDIR\${PRODUCT_EXECUTABLE}"
 !define MUI_ABORTWARNING # This will warn the user if they exit from the installer.
 
 !insertmacro MUI_PAGE_WELCOME # Welcome to the installer page.
-# !insertmacro MUI_PAGE_LICENSE "resources\eula.txt" # Adds a EULA page to the installer
+!insertmacro MUI_PAGE_LICENSE "..\..\..\..\LICENSE"
+!insertmacro MUI_PAGE_LICENSE "..\..\..\packaging\WebView2-NOTICE.txt"
 !insertmacro MUI_PAGE_DIRECTORY # In which folder install page.
 !insertmacro MUI_PAGE_INSTFILES # Installing page.
 !insertmacro MUI_PAGE_FINISH # Finished installation page.
@@ -90,11 +176,19 @@ FunctionEnd
 Section
     !insertmacro wails.setShellContext
 
-    !insertmacro wails.webview2runtime
+    !insertmacro shogun2sync.webview2runtime
 
     SetOutPath $INSTDIR
 
     !insertmacro wails.files
+    # rclone drives every sync. Windows has no package manager to pull it
+    # from, and the app looks for it next to its own executable, so the
+    # checksum-verified copy must land here or a clean install cannot sync.
+    File "/oname=rclone.exe" "..\..\bin\rclone.exe"
+    File "/oname=LICENSE.txt" "..\..\..\..\LICENSE"
+    File "/oname=rclone-COPYING.txt" "..\..\..\packaging\rclone-COPYING"
+    File "/oname=WebView2-LICENSE.html" "tmp\WebView2-LICENSE.html"
+    File "/oname=GO-THIRD-PARTY-NOTICES.txt" "tmp\GO-THIRD-PARTY-NOTICES.txt"
 
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
@@ -109,6 +203,13 @@ Section "uninstall"
     !insertmacro wails.setShellContext
 
     RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
+
+    # RMDir /r below already clears the tree, but delete the bundled
+    # third-party binary and its notice by name first: leaving a stray rclone
+    # copy behind after an uninstall is exactly the kind of orphaned tool a
+    # user would never think to look for.
+    Delete "$INSTDIR\rclone.exe"
+    Delete "$INSTDIR\rclone-COPYING.txt"
 
     RMDir /r $INSTDIR
 

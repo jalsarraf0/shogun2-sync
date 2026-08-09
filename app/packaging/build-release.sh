@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Builds every distributable artifact: a portable Windows .exe (zipped),
-# Linux .deb/.rpm/Arch packages, and a source tarball. Run from the repo
-# root or from app/ — it figures out where it is.
+# Builds every distributable artifact: a self-contained Windows installer,
+# Linux .deb/.rpm/Arch packages, a one-file automatic Linux installer,
+# and a source tarball. Run from the repo root or from app/.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,25 +11,30 @@ DIST_DIR="$REPO_ROOT/dist"
 RCLONE_VERSION="1.74.4"
 RCLONE_ARCHIVE="rclone-v${RCLONE_VERSION}-linux-amd64.zip"
 RCLONE_ARCHIVE_SHA256="fe435e0c36228e7c2f116a8701f01127bb1f694005fc11d1f27186c8bca4115d"
+# Windows ships the same rclone version from the same signed manifest. Its
+# own pinned digest exists so a swapped or truncated download fails here
+# instead of producing an installer that cannot sync on a clean machine.
+RCLONE_WINDOWS_ARCHIVE="rclone-v${RCLONE_VERSION}-windows-amd64.zip"
+RCLONE_WINDOWS_ARCHIVE_SHA256="ef097ef9de37a57feb7d9f9c7afb34148ad3c65be8025f1d8f7f521554a701ea"
 RCLONE_COPYING_SHA256="8cd2e9e750b90a04b7d82dbbca3930c696ae0309d7c10464f90a44f45754cd04"
 RCLONE_BASE_URL="https://downloads.rclone.org/v${RCLONE_VERSION}"
 
 if [[ $# -lt 1 ]]; then
-  echo "usage: $(basename "$0") <version>   (e.g. 1.0.0)" >&2
+  echo "usage: $(basename "$0") <version>   (e.g. 1.0.1)" >&2
   exit 2
 fi
 VERSION="$1"
 
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "version must be a plain semantic version (for example, 1.0.0)" >&2
+  echo "version must be a plain semantic version (for example, 1.0.1)" >&2
   exit 2
 fi
 
 command -v wails >/dev/null || { echo "wails CLI not found on PATH"; exit 1; }
 command -v nfpm >/dev/null || { echo "nfpm not found on PATH"; exit 1; }
 command -v curl >/dev/null || { echo "curl not found on PATH"; exit 1; }
+command -v npm >/dev/null || { echo "npm not found on PATH"; exit 1; }
 command -v unzip >/dev/null || { echo "unzip not found on PATH"; exit 1; }
-command -v zip >/dev/null || { echo "zip not found on PATH"; exit 1; }
 command -v sha256sum >/dev/null || { echo "sha256sum not found on PATH"; exit 1; }
 
 # The version lives in three places that all end up user-visible: this
@@ -79,51 +84,77 @@ mkdir -p "$DIST_DIR"
 RCLONE_WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$RCLONE_WORK_DIR"' EXIT
 
-echo "==> Fetching verified rclone $RCLONE_VERSION for Linux"
-curl --fail --location --silent --show-error \
-  --output "$RCLONE_WORK_DIR/$RCLONE_ARCHIVE" \
-  "$RCLONE_BASE_URL/$RCLONE_ARCHIVE"
+echo "==> Fetching verified rclone $RCLONE_VERSION for Linux and Windows"
 curl --fail --location --silent --show-error \
   --output "$RCLONE_WORK_DIR/SHA256SUMS" \
   "$RCLONE_BASE_URL/SHA256SUMS"
-manifest_checksum="$(awk -v archive="$RCLONE_ARCHIVE" '$2 == archive { print $1 }' \
-  "$RCLONE_WORK_DIR/SHA256SUMS")"
-if [[ "$manifest_checksum" != "$RCLONE_ARCHIVE_SHA256" ]]; then
-  echo "rclone checksum manifest did not contain the pinned checksum" >&2
-  exit 1
-fi
-( cd "$RCLONE_WORK_DIR" \
-  && printf '%s  %s\n' "$RCLONE_ARCHIVE_SHA256" "$RCLONE_ARCHIVE" \
-  | sha256sum --check --strict - )
-unzip -q "$RCLONE_WORK_DIR/$RCLONE_ARCHIVE" -d "$RCLONE_WORK_DIR"
+# Both platforms take the same two-step proof: the pinned digest must be the
+# one rclone published for that exact file name, and the bytes on disk must
+# then match the pinned digest. Either check failing stops the release.
+fetch_verified_rclone() {
+  local archive="$1" expected="$2" manifest_checksum
+  curl --fail --location --silent --show-error \
+    --output "$RCLONE_WORK_DIR/$archive" \
+    "$RCLONE_BASE_URL/$archive"
+  manifest_checksum="$(awk -v archive="$archive" '$2 == archive { print $1 }' \
+    "$RCLONE_WORK_DIR/SHA256SUMS")"
+  if [[ "$manifest_checksum" != "$expected" ]]; then
+    echo "rclone checksum manifest did not contain the pinned checksum for $archive" >&2
+    exit 1
+  fi
+  ( cd "$RCLONE_WORK_DIR" \
+    && printf '%s  %s\n' "$expected" "$archive" \
+    | sha256sum --check --strict - )
+  unzip -q "$RCLONE_WORK_DIR/$archive" -d "$RCLONE_WORK_DIR"
+}
+
+fetch_verified_rclone "$RCLONE_ARCHIVE" "$RCLONE_ARCHIVE_SHA256"
 RCLONE_EXTRACTED_DIR="$RCLONE_WORK_DIR/rclone-v${RCLONE_VERSION}-linux-amd64"
 [[ -x "$RCLONE_EXTRACTED_DIR/rclone" ]] \
   || { echo "verified rclone archive did not contain its executable" >&2; exit 1; }
 "$RCLONE_EXTRACTED_DIR/rclone" version | grep -q "rclone v${RCLONE_VERSION}"
 install -Dm755 "$RCLONE_EXTRACTED_DIR/rclone" "$APP_DIR/build/bin/rclone"
 
+fetch_verified_rclone "$RCLONE_WINDOWS_ARCHIVE" "$RCLONE_WINDOWS_ARCHIVE_SHA256"
+RCLONE_WINDOWS_EXTRACTED_DIR="$RCLONE_WORK_DIR/rclone-v${RCLONE_VERSION}-windows-amd64"
+[[ -s "$RCLONE_WINDOWS_EXTRACTED_DIR/rclone.exe" ]] \
+  || { echo "verified rclone archive did not contain rclone.exe" >&2; exit 1; }
+# `rclone.exe version` cannot run on the Linux release host, so the Windows
+# build's version is established by the verified digest plus the
+# version-stamped archive directory, and confirmed once more by the version
+# string linked into the executable itself.
+grep -aq "v${RCLONE_VERSION}" "$RCLONE_WINDOWS_EXTRACTED_DIR/rclone.exe" \
+  || { echo "verified rclone.exe does not carry the pinned version string" >&2; exit 1; }
+install -Dm755 "$RCLONE_WINDOWS_EXTRACTED_DIR/rclone.exe" "$APP_DIR/build/bin/rclone.exe"
+
 cd "$APP_DIR"
 
-echo "==> Building Linux binary"
-wails build -m -nosyncgomod -tags webkit2_41
-cp build/bin/shogun2sync "$DIST_DIR/shogun2sync-linux-amd64"
-chmod +x "$DIST_DIR/shogun2sync-linux-amd64"
+echo "==> Building frontend"
+npm ci --prefix frontend
+npm run build --prefix frontend
 
-echo "==> Building recommended Linux bundle (app + private rclone runtime)"
-LINUX_BUNDLE_DIR="$RCLONE_WORK_DIR/shogun2sync-linux-amd64"
-mkdir -p "$LINUX_BUNDLE_DIR"
-install -m755 build/bin/shogun2sync "$LINUX_BUNDLE_DIR/shogun2sync"
-install -m755 build/bin/rclone "$LINUX_BUNDLE_DIR/rclone"
-install -m644 packaging/rclone-COPYING "$LINUX_BUNDLE_DIR/rclone-COPYING"
-SOURCE_DATE_EPOCH="$(git -C "$REPO_ROOT" show -s --format=%ct HEAD)"
-tar -C "$RCLONE_WORK_DIR" --sort=name --mtime="@$SOURCE_DATE_EPOCH" \
-  --owner=0 --group=0 --numeric-owner \
-  -czf "$DIST_DIR/shogun2sync-linux-amd64.tar.gz" \
-  shogun2sync-linux-amd64
+"$SCRIPT_DIR/build-linux-bookworm.sh"
+"$SCRIPT_DIR/collect-go-notices.sh" \
+  "$APP_DIR/build/bin/GO-THIRD-PARTY-NOTICES.txt" \
+  "$APP_DIR/build/bin/shogun2sync"
 
-echo "==> Building Windows binary (portable .exe, no installer)"
-wails build -m -nosyncgomod -platform windows/amd64
-( cd build/bin && zip -q "$DIST_DIR/shogun2sync-windows-amd64.zip" shogun2sync.exe )
+# The one-file installer carries its own GTK/WebKitGTK, so the runtime has to
+# exist before it can be packaged.
+"$SCRIPT_DIR/build-linux-runtime.sh"
+
+echo "==> Building one-file Linux installer"
+"$SCRIPT_DIR/build-linux-installer.sh" \
+  "$DIST_DIR/shogun2sync-linux-amd64.run"
+
+# Never publish a .run that quietly depends on the host's GUI stack. This
+# installs and launches it on four distributions with networking disabled.
+"$SCRIPT_DIR/verify-linux-offline.sh" \
+  "$DIST_DIR/shogun2sync-linux-amd64.run"
+
+"$SCRIPT_DIR/build-windows-installer.sh"
+WINDOWS_INSTALLER="build/bin/shogun2sync-amd64-installer.exe"
+install -m644 "$WINDOWS_INSTALLER" \
+  "$DIST_DIR/shogun2sync-windows-amd64-installer.exe"
 
 echo "==> Building .deb / .rpm / Arch packages"
 export VERSION
@@ -146,12 +177,11 @@ sed "0,/'SKIP'/s//'$source_checksum'/" "$SCRIPT_DIR/PKGBUILD" > "$DIST_DIR/PKGBU
 grep -Fq "'$source_checksum'" "$DIST_DIR/PKGBUILD"
 
 echo "==> Writing checksums"
-# SHA256SUMS is excluded by name: the redirection creates it before find
-# runs, so it would otherwise list a checksum of its own empty self and
-# fail `sha256sum -c`.
+# Write outside dist first so SHA256SUMS cannot accidentally include itself.
 ( cd "$DIST_DIR" \
-  && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\n' \
-  | sort | xargs sha256sum -- > SHA256SUMS )
+  && find . -maxdepth 1 -type f -printf '%P\n' \
+  | sort | xargs sha256sum -- > "$RCLONE_WORK_DIR/SHA256SUMS" )
+install -m644 "$RCLONE_WORK_DIR/SHA256SUMS" "$DIST_DIR/SHA256SUMS"
 
 echo "==> Done. Artifacts in $DIST_DIR:"
 ls -la "$DIST_DIR"
