@@ -25,16 +25,28 @@ license: MIT
 overrides:
   deb:
     depends:
+      - ca-certificates
+      - libc6
       - libgtk-3-0t64 | libgtk-3-0
       - libwebkit2gtk-4.1-0
+      - systemd
+      - xdg-utils
   rpm:
     depends:
+      - ca-certificates
+      - glibc
       - gtk3
       - webkit2gtk4.1
+      - systemd
+      - xdg-utils
   archlinux:
     depends:
+      - ca-certificates
+      - glibc
       - gtk3
       - webkit2gtk-4.1
+      - systemd
+      - xdg-utils
 
 contents:
   - src: ./build/bin/shogun2sync
@@ -47,6 +59,14 @@ contents:
       mode: 0755
   - src: ./packaging/rclone-COPYING
     dst: /usr/share/licenses/shogun2sync/rclone-COPYING
+    file_info:
+      mode: 0644
+  - src: ../LICENSE
+    dst: /usr/share/licenses/shogun2sync/LICENSE
+    file_info:
+      mode: 0644
+  - src: ./build/bin/GO-THIRD-PARTY-NOTICES.txt
+    dst: /usr/share/licenses/shogun2sync/GO-THIRD-PARTY-NOTICES.txt
     file_info:
       mode: 0644
   - src: ./packaging/shogun2sync.desktop

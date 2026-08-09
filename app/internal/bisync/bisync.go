@@ -98,6 +98,35 @@ func systemdQuote(s string) string {
 	return `"` + r.Replace(s) + `"`
 }
 
+// systemdConditionPath protects a path used as a Condition* value. Conditions
+// are not command lines: systemd takes the rest of the line verbatim, so the
+// ExecStart quoting rules do not apply and quoting a path actively breaks it
+// ("path is not absolute"). Only the percent specifier needs escaping. An empty
+// result means the caller should omit the condition rather than emit a unit
+// systemd would reject.
+func systemdConditionPath(path string) string {
+	if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "\n\r") {
+		return ""
+	}
+	return strings.ReplaceAll(path, `%`, `%%`)
+}
+
+func serviceUnit(rclonePath, shPath, scriptPath string) string {
+	condition := ""
+	// Package removal deletes the bundled rclone but cannot reach into a user's
+	// systemd directory, so the leftover timer must refuse to run on its own.
+	if guard := systemdConditionPath(rclonePath); guard != "" {
+		condition = "ConditionFileIsExecutable=" + guard + "\n"
+	}
+	return fmt.Sprintf(`[Unit]
+Description=Sync the Shogun 2 save folder with Google Drive
+%s
+[Service]
+Type=oneshot
+ExecStart=%s %s
+`, condition, systemdQuote(shPath), systemdQuote(scriptPath))
+}
+
 // syncScript is the body of the script the timer runs.
 //
 // It's a real file rather than an inline `sh -c '...'` in the unit because
@@ -239,13 +268,7 @@ func EnsureMirror(ctx context.Context, remoteName, remoteSubfolder, localDir str
 		return err
 	}
 
-	serviceContents := fmt.Sprintf(`[Unit]
-Description=Sync the Shogun 2 save folder with Google Drive
-
-[Service]
-Type=oneshot
-ExecStart=%s %s
-`, systemdQuote(shPath), systemdQuote(scriptPath))
+	serviceContents := serviceUnit(rclonePath, shPath, scriptPath)
 
 	timerContents := `[Unit]
 Description=Run the Shogun 2 Google Drive sync every 2 minutes

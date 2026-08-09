@@ -27,6 +27,41 @@ func TestSystemdQuoteProtectsSpecialCharacters(t *testing.T) {
 	}
 }
 
+// The guard has to be spelled exactly as systemd spells it. ConditionPathIsExecutable
+// is not a real directive, and a quoted value is rejected as "not absolute" — either
+// mistake makes systemd drop the line and run the timer unconditionally, which is the
+// failure this guard exists to prevent.
+func TestServiceSkipsAfterBundledRcloneIsUninstalled(t *testing.T) {
+	unit := serviceUnit(
+		`/usr/local/lib/shogun2sync/rclone`,
+		`/bin/sh`,
+		`/home/ken/.config/shogun2sync/gdrive-bisync.sh`,
+	)
+	if !strings.Contains(unit, "\nConditionFileIsExecutable=/usr/local/lib/shogun2sync/rclone\n") {
+		t.Fatalf("service does not guard its bundled rclone path:\n%s", unit)
+	}
+	if strings.Contains(unit, "ConditionPathIsExecutable") {
+		t.Fatalf("service uses a directive systemd does not know:\n%s", unit)
+	}
+}
+
+func TestServiceConditionEscapesSpecifiersAndDropsUnusablePaths(t *testing.T) {
+	unit := serviceUnit(`/opt/100%pure/rclone`, `/bin/sh`, `/tmp/s.sh`)
+	if !strings.Contains(unit, "\nConditionFileIsExecutable=/opt/100%%pure/rclone\n") {
+		t.Fatalf("percent was not escaped for the condition:\n%s", unit)
+	}
+
+	// A relative path in a Condition* value makes systemd log an error and skip
+	// the line, so omit the guard rather than ship a unit that logs on every run.
+	// A newline would let a crafted path inject its own directives.
+	for _, unusable := range []string{"rclone", "", "/opt/bad\nExecStart=/bin/false"} {
+		guarded := serviceUnit(unusable, `/bin/sh`, `/tmp/s.sh`)
+		if strings.Contains(guarded, "ConditionFileIsExecutable") {
+			t.Fatalf("emitted a condition for unusable path %q:\n%s", unusable, guarded)
+		}
+	}
+}
+
 // The generated script is what actually runs every two minutes, so its
 // shape matters more than most code in this app.
 func TestSyncScriptIsValidShellAndQuotesPaths(t *testing.T) {
