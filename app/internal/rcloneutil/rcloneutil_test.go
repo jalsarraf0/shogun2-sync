@@ -297,25 +297,22 @@ func TestResolveRclonePathPriority(t *testing.T) {
 	executable := filepath.Join(dir, "shogun2sync")
 	sibling := filepath.Join(dir, "rclone")
 	private := filepath.Join(dir, "private-rclone")
-	for _, path := range []string{sibling, private} {
-		if err := os.WriteFile(path, []byte("stub"), 0o700); err != nil {
-			t.Fatal(err)
-		}
+	executableFiles := map[string]bool{sibling: true, private: true}
+	isExecutable := func(path string) bool {
+		return executableFiles[path]
 	}
 	lookPath := func(string) (string, error) { return "/from/PATH/rclone", nil }
 
-	got, err := resolveRclonePath("linux", executable, private, lookPath)
+	got, err := resolveRclonePathWithCheck("linux", executable, private, lookPath, isExecutable)
 	if err != nil || got != sibling {
 		t.Fatalf("Linux sibling resolution = (%q, %v), want %q", got, err, sibling)
 	}
-	if err := os.Chmod(sibling, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	got, err = resolveRclonePath("linux", executable, private, lookPath)
+	delete(executableFiles, sibling)
+	got, err = resolveRclonePathWithCheck("linux", executable, private, lookPath, isExecutable)
 	if err != nil || got != private {
 		t.Fatalf("Linux private resolution = (%q, %v), want %q", got, err, private)
 	}
-	got, err = resolveRclonePath("windows", executable, private, lookPath)
+	got, err = resolveRclonePathWithCheck("windows", executable, private, lookPath, isExecutable)
 	if err != nil || got != "/from/PATH/rclone" {
 		t.Fatalf("non-Linux resolution = (%q, %v), want PATH", got, err)
 	}

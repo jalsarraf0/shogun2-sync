@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"shogun2sync/internal/config"
+	"shogun2sync/internal/linkutil"
 )
 
 func setupFakeSave(t *testing.T) (savePath, cloudRoot string) {
@@ -39,12 +40,12 @@ func TestSetupMovesFilesAndLinks(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(SyncTarget(cfg), "turn090.save")); err != nil {
 		t.Fatalf("expected save file moved into sync target: %v", err)
 	}
-	info, err := os.Lstat(savePath)
+	linkStatus, err := linkutil.Inspect(savePath, SyncTarget(cfg))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		t.Fatal("expected savePath to become a symlink")
+	if !linkStatus.IsLink || !linkStatus.MatchesTarget {
+		t.Fatalf("expected savePath to link to the sync target, got %+v", linkStatus)
 	}
 }
 
@@ -154,8 +155,15 @@ func TestUndoRestoresARealFolderAndKeepsTheCloudCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		t.Fatal("expected the save path to be a real folder after Undo")
+	if !info.IsDir() {
+		t.Fatalf("expected the save path to be a real folder after Undo, got %s", info.Mode())
+	}
+	linkStatus, err := linkutil.Inspect(savePath, SyncTarget(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linkStatus.IsLink {
+		t.Fatal("expected the save path not to be a link after Undo")
 	}
 	if _, err := os.Stat(filepath.Join(savePath, "turn090.save")); err != nil {
 		t.Fatalf("expected the save restored locally: %v", err)

@@ -27,7 +27,14 @@ func TestGoogleMirrorLocationKeepsHostAndGuestOnSameLocalFolder(t *testing.T) {
 
 func TestRunSetupPersistsOnlyCompletedSetup(t *testing.T) {
 	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("AppData", configHome)
+	case "darwin":
+		t.Setenv("HOME", configHome)
+	default:
+		t.Setenv("XDG_CONFIG_HOME", configHome)
+	}
 	root := t.TempDir()
 	cloudRoot := filepath.Join(root, "cloud")
 	savePath := filepath.Join(root, "save_games_multiplayer")

@@ -8,8 +8,21 @@ import (
 	"testing"
 )
 
+func isolateConfigHome(t *testing.T) {
+	t.Helper()
+	root := t.TempDir()
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("AppData", root)
+	case "darwin":
+		t.Setenv("HOME", root)
+	default:
+		t.Setenv("XDG_CONFIG_HOME", root)
+	}
+}
+
 func TestSaveLoadRoundTrip(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfigHome(t)
 
 	if Exists() {
 		t.Fatal("Exists() should be false before any Save")
@@ -37,7 +50,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 }
 
 func TestSaveUsesOwnerOnlyPermissionsEvenWhenReplacingOldConfig(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfigHome(t)
 
 	if err := Save(Config{CloudProvider: "dropbox"}); err != nil {
 		t.Fatalf("first Save: %v", err)
@@ -114,7 +127,7 @@ func TestGoogleCredentialsEmptyOrComplete(t *testing.T) {
 }
 
 func TestSaveRejectsIncompleteCredentialsWithoutReplacingConfig(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfigHome(t)
 	want := Config{CloudProvider: "dropbox"}
 	if err := Save(want); err != nil {
 		t.Fatal(err)
@@ -134,7 +147,7 @@ func TestSaveRejectsIncompleteCredentialsWithoutReplacingConfig(t *testing.T) {
 }
 
 func TestLoadRejectsIncompleteCredentials(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfigHome(t)
 	p, err := path()
 	if err != nil {
 		t.Fatal(err)

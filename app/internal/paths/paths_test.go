@@ -15,7 +15,7 @@ func TestExpandHome(t *testing.T) {
 	}
 	cases := map[string]string{
 		"~":            home,
-		"~/Dropbox":    home + "/Dropbox",
+		"~/Dropbox":    filepath.Join(home, "Dropbox"),
 		"/absolute":    "/absolute",
 		"relative/dir": "relative/dir",
 	}

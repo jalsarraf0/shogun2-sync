@@ -64,14 +64,18 @@ func Path() (string, error) {
 }
 
 func resolveRclonePath(goos, executable, privatePath string, lookPath func(string) (string, error)) (string, error) {
+	return resolveRclonePathWithCheck(goos, executable, privatePath, lookPath, isExecutableFile)
+}
+
+func resolveRclonePathWithCheck(goos, executable, privatePath string, lookPath func(string) (string, error), executableFile func(string) bool) (string, error) {
 	if goos == "linux" {
 		if executable != "" {
 			sibling := filepath.Join(filepath.Dir(executable), "rclone")
-			if isExecutableFile(sibling) {
+			if executableFile(sibling) {
 				return sibling, nil
 			}
 		}
-		if isExecutableFile(privatePath) {
+		if executableFile(privatePath) {
 			return privatePath, nil
 		}
 	}
