@@ -4,8 +4,8 @@
 // Why: rclone's own built-in OAuth webserver proved unreliable in practice
 // (its local callback listener died seconds after starting, well before a
 // human could complete the browser login, producing a bare "connection
-// refused" with no diagnosable cause). Since we control this server, every
-// request is logged and the wait window is generous.
+// refused" with no diagnosable cause). Since we control this server, its
+// wait window is generous and callback credentials never need to be logged.
 //
 // We reuse rclone's own OAuth client credentials rather than registering a
 // new one. This isn't a workaround: rclone's client_id/client_secret are
@@ -24,10 +24,13 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"html"
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -42,6 +45,12 @@ const (
 
 	driveScope  = "https://www.googleapis.com/auth/drive"
 	authTimeout = 5 * time.Minute
+
+	callbackReadHeaderTimeout = 5 * time.Second
+	callbackReadTimeout       = 10 * time.Second
+	callbackWriteTimeout      = 10 * time.Second
+	callbackIdleTimeout       = 30 * time.Second
+	callbackShutdownTimeout   = 2 * time.Second
 )
 
 // obscureKey is rclone's fixed AES-CTR key for its "obscure" scheme
@@ -93,16 +102,72 @@ type AuthResult struct {
 	TokenJSON string // ready to hand to `rclone config update <name> token <json>`
 }
 
+// Credentials identify the OAuth client the Drive login runs against.
+type Credentials struct {
+	ClientID     string
+	ClientSecret string
+}
+
+// Validate prevents a partially configured custom OAuth client from silently
+// falling back to unrelated credentials or failing after the browser opens.
+func (c Credentials) Validate() error {
+	idSet := strings.TrimSpace(c.ClientID) != ""
+	secretSet := strings.TrimSpace(c.ClientSecret) != ""
+	if !idSet && !secretSet {
+		return errors.New("no Google OAuth credentials configured")
+	}
+	if idSet != secretSet {
+		return errors.New("Google client ID and client secret must be provided together")
+	}
+	return nil
+}
+
+// Shared returns rclone's own public client credentials.
+//
+// rclone's docs now say this shared client "is being retired and will stop
+// working during 2026", so this is no longer something to rely on
+// indefinitely — hence Credentials being a parameter at all, so a player
+// can supply their own client ID when that day arrives without needing a
+// new build of this app.
+func Shared() (Credentials, error) {
+	secret, err := revealClientSecret(rcloneEncryptedClientSecret)
+	if err != nil {
+		return Credentials{}, fmt.Errorf("decode client secret: %w", err)
+	}
+	return Credentials{ClientID: rcloneClientID, ClientSecret: secret}, nil
+}
+
+// ErrClientRetired reports that Google no longer recognises the OAuth
+// client. Distinguishing this from a generic failure matters because the
+// fix is entirely different: nothing about the player's own setup is
+// wrong, and no amount of retrying will help.
+var ErrClientRetired = errors.New(
+	"Google no longer accepts the sign-in credentials this app ships with. " +
+		"You can supply your own Google client ID under \"Use my own Google credentials\" — " +
+		"https://rclone.org/drive/#making-your-own-client-id has the steps")
+
+// classifyExchangeError turns Google's OAuth error into something a player
+// can act on.
+func classifyExchangeError(err error) error {
+	var re *oauth2.RetrieveError
+	if errors.As(err, &re) {
+		body := string(re.Body)
+		if strings.Contains(body, "invalid_client") || strings.Contains(body, "deleted_client") {
+			return ErrClientRetired
+		}
+	}
+	return fmt.Errorf("exchange code for token: %w", err)
+}
+
 // Authorize runs the full OAuth loopback flow: starts a local callback
 // server on an OS-assigned port, opens authURL via openURL (expected to
 // launch the system's default browser — the standard, most reliable choice
 // for OAuth logins; the same pattern used by gcloud, the GitHub CLI, AWS
 // CLI, and rclone itself), waits for the redirect, and exchanges the code
 // for a token.
-func Authorize(ctx context.Context, openURL func(string) error) (*AuthResult, error) {
-	secret, err := revealClientSecret(rcloneEncryptedClientSecret)
-	if err != nil {
-		return nil, fmt.Errorf("decode client secret: %w", err)
+func Authorize(ctx context.Context, creds Credentials, openURL func(string) error) (*AuthResult, error) {
+	if err := creds.Validate(); err != nil {
+		return nil, err
 	}
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -115,8 +180,8 @@ func Authorize(ctx context.Context, openURL func(string) error) (*AuthResult, er
 	redirectURL := fmt.Sprintf("http://127.0.0.1:%d/", port)
 
 	conf := &oauth2.Config{
-		ClientID:     rcloneClientID,
-		ClientSecret: secret,
+		ClientID:     creds.ClientID,
+		ClientSecret: creds.ClientSecret,
 		Scopes:       []string{driveScope},
 		Endpoint:     google.Endpoint,
 		RedirectURL:  redirectURL,
@@ -132,20 +197,64 @@ func Authorize(ctx context.Context, openURL func(string) error) (*AuthResult, er
 	errCh := make(chan error, 1)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("gdrive oauth: callback hit: %s", r.URL.String())
+	mux.Handle("/", callbackHandler(state, codeCh, errCh))
+
+	srv := newCallbackServer(mux)
+	go func() {
+		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
+			log.Printf("gdrive oauth: local server error: %v", err)
+		}
+	}()
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), callbackShutdownTimeout)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+
+	// Do not log redirectURL or authURL. Both identify the callback endpoint,
+	// and authURL also contains the OAuth state value.
+	log.Printf("gdrive oauth: local callback server ready; opening browser")
+	if err := openURL(authURL); err != nil {
+		return nil, fmt.Errorf("open browser: %w", err)
+	}
+
+	var code string
+	select {
+	case code = <-codeCh:
+	case err := <-errCh:
+		return nil, err
+	case <-time.After(authTimeout):
+		return nil, fmt.Errorf("timed out after %s waiting for browser authorization", authTimeout)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	token, err := conf.Exchange(ctx, code)
+	if err != nil {
+		return nil, classifyExchangeError(err)
+	}
+
+	tokenJSON, err := json.Marshal(token)
+	if err != nil {
+		return nil, fmt.Errorf("marshal token: %w", err)
+	}
+
+	return &AuthResult{Token: token, TokenJSON: string(tokenJSON)}, nil
+}
+
+func callbackHandler(state string, codeCh chan<- string, errCh chan<- error) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 
 		if got := q.Get("state"); got != state {
 			http.Error(w, "state mismatch", http.StatusBadRequest)
-			select {
-			case errCh <- fmt.Errorf("state mismatch (got %q)", got):
-			default:
-			}
+			// A browser extension, stale tab, or unrelated loopback request must
+			// not cancel the real flow. Keep waiting for the callback that has
+			// the state generated for this authorization attempt.
 			return
 		}
 		if msg := q.Get("error"); msg != "" {
-			fmt.Fprintf(w, "<html><body><h2>Authorization failed: %s</h2><p>You can close this window.</p></body></html>", msg)
+			fmt.Fprintf(w, "<html><body><h2>Authorization failed: %s</h2><p>You can close this window.</p></body></html>", html.EscapeString(msg))
 			select {
 			case errCh <- fmt.Errorf("google returned error: %s", msg):
 			default:
@@ -167,40 +276,14 @@ func Authorize(ctx context.Context, openURL func(string) error) (*AuthResult, er
 		default:
 		}
 	})
+}
 
-	srv := &http.Server{Handler: mux}
-	go func() {
-		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
-			log.Printf("gdrive oauth: local server error: %v", err)
-		}
-	}()
-	defer srv.Shutdown(context.Background())
-
-	log.Printf("gdrive oauth: listening on %s, opening browser", redirectURL)
-	if err := openURL(authURL); err != nil {
-		return nil, fmt.Errorf("open browser: %w", err)
+func newCallbackServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: callbackReadHeaderTimeout,
+		ReadTimeout:       callbackReadTimeout,
+		WriteTimeout:      callbackWriteTimeout,
+		IdleTimeout:       callbackIdleTimeout,
 	}
-
-	var code string
-	select {
-	case code = <-codeCh:
-	case err := <-errCh:
-		return nil, err
-	case <-time.After(authTimeout):
-		return nil, fmt.Errorf("timed out after %s waiting for browser authorization", authTimeout)
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-
-	token, err := conf.Exchange(ctx, code)
-	if err != nil {
-		return nil, fmt.Errorf("exchange code for token: %w", err)
-	}
-
-	tokenJSON, err := json.Marshal(token)
-	if err != nil {
-		return nil, fmt.Errorf("marshal token: %w", err)
-	}
-
-	return &AuthResult{Token: token, TokenJSON: string(tokenJSON)}, nil
 }
