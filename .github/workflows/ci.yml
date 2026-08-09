@@ -139,6 +139,27 @@ jobs:
         working-directory: app
         run: GOOS=windows GOARCH=amd64 go vet ./...
 
+      # The fake Google Drive CI tests need a real rclone binary (alias remote
+      # + bisync). Install the same pinned release version the packages ship
+      # so the matrix proves production flags, not whatever apt has.
+      - name: Install pinned rclone for fake Drive CI tests
+        run: |
+          rclone_version="$(sed -n 's/^RCLONE_VERSION="\([^"]*\)"/\1/p' app/packaging/build-release.sh)"
+          rclone_archive="rclone-v${rclone_version}-linux-amd64.zip"
+          rclone_checksum="$(sed -n 's/^RCLONE_ARCHIVE_SHA256="\([^"]*\)"/\1/p' app/packaging/build-release.sh)"
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          curl --fail --location --silent --show-error \
+            --output "$work/$rclone_archive" \
+            "https://downloads.rclone.org/v${rclone_version}/$rclone_archive"
+          printf '%s  %s\n' "$rclone_checksum" "$work/$rclone_archive" \
+            | sha256sum --check --strict -
+          unzip -q "$work/$rclone_archive" -d "$work"
+          sudo install -m755 \
+            "$work/rclone-v${rclone_version}-linux-amd64/rclone" \
+            /usr/local/bin/rclone
+          rclone version | grep -F "rclone v${rclone_version}"
+
       - name: Test
         working-directory: app
         run: go test -race ./...

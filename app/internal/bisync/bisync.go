@@ -12,6 +12,7 @@ package bisync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -248,19 +249,30 @@ if [ "$status" -eq 0 ]; then
 fi
 
 # Exit 7 is a critical abort: rclone will refuse every later run until a
-# --resync re-establishes the baseline. Doing that automatically is
-# normally dangerous, because --resync picks a winner and can overwrite
-# the other player's newer save. The one case where it's safe is a local
-# folder with nothing in it -- which is also the case that lands here most
-# often, since bisync treats a legitimately empty folder as
-# indistinguishable from a mount that dropped out.
+# --resync re-establishes the baseline.
+#
+# 1) Local empty: treat the remote as authoritative (path2). Common after a
+#    mount dropout that made a legitimately empty folder look like a broken
+#    baseline.
+# 2) Local has files: an empty initial baseline leaves "empty prior Path1
+#    listing" forever under --resilient alone. Re-baseline with newer wins
+#    so the first real campaign save can upload without wiping the other
+#    player's newer copy.
 # Ignore leftover app-private dirs when deciding "empty".
-if [ "$status" -eq 7 ] && [ -z "$(find "$LOCAL" -mindepth 1 -maxdepth 1 \
-    ! -name '.shogun2sync-sync.lock' ! -name '.shogun2sync-trash' 2>/dev/null | head -n 1)" ]; then
-  # Drop the lock before exec so a replaced process cannot leave it behind.
+if [ "$status" -eq 7 ]; then
+  others=$(find "$LOCAL" -mindepth 1 -maxdepth 1 \
+    ! -name '.shogun2sync-sync.lock' ! -name '.shogun2sync-trash' 2>/dev/null | head -n 1)
   release_lock
   trap - EXIT INT TERM
-  exec "$RCLONE" bisync "$LOCAL" "$REMOTE" --resync --resync-mode path2 \
+  if [ -z "$others" ]; then
+    exec "$RCLONE" bisync "$LOCAL" "$REMOTE" --resync --resync-mode path2 \
+      --create-empty-src-dirs \
+      --filter '- .shogun2sync-*/**' --filter '- .shogun2sync-*' \
+      --log-file "$LOG" --log-format date,time -v
+  fi
+  # Local has content: newer-wins resync, same flags as EstablishBaseline.
+  exec "$RCLONE" bisync "$LOCAL" "$REMOTE" --resync --resync-mode newer \
+    --conflict-resolve newer --conflict-loser num --conflict-suffix conflict \
     --create-empty-src-dirs \
     --filter '- .shogun2sync-*/**' --filter '- .shogun2sync-*' \
     --log-file "$LOG" --log-format date,time -v
@@ -278,6 +290,114 @@ func Paths() (scriptPath, logPath string, err error) {
 	}
 	dir := filepath.Join(base, "shogun2sync")
 	return filepath.Join(dir, "gdrive-bisync.sh"), filepath.Join(dir, "gdrive-bisync.log"), nil
+}
+
+// remoteSpec joins an rclone remote name with an optional subfolder into the
+// path form bisync expects ("name:" or "name:Shogun2SaveSync").
+func remoteSpec(remoteName, remoteSubfolder string) string {
+	if remoteSubfolder == "" {
+		return remoteName + ":"
+	}
+	return remoteName + ":" + remoteSubfolder
+}
+
+// EstablishBaseline creates localDir (if needed) and runs the initial
+// rclone bisync --resync that production uses when a mirror pair is first
+// set up. It does not install systemd units.
+//
+// CI uses this against a local-directory stand-in for Google Drive so the
+// Linux Drive path is proven without OAuth or a real Drive account. The
+// shipped app never exposes that stand-in to players.
+func EstablishBaseline(ctx context.Context, remoteName, remoteSubfolder, localDir string, remoteRootIsSyncFolder bool) error {
+	if runtime.GOOS != "linux" {
+		return fmt.Errorf("bisync is only needed on Linux")
+	}
+	rclonePath, err := rcloneutil.Path()
+	if err != nil {
+		return fmt.Errorf("rclone is not installed")
+	}
+	if err := CheckVersion(ctx); err != nil {
+		return err
+	}
+	if remoteSubfolder == "" && !remoteRootIsSyncFolder {
+		// Without this an empty subfolder would mirror the player's entire
+		// Drive into a game-saves folder.
+		return fmt.Errorf("refusing to mirror the whole Drive: no sync folder was given")
+	}
+	if err := os.MkdirAll(localDir, 0o755); err != nil {
+		return fmt.Errorf("creating %s: %w", localDir, err)
+	}
+	remote := remoteSpec(remoteName, remoteSubfolder)
+	// "newer" is deliberate. Bare --resync defaults to path1 and can
+	// overwrite a newer save on Drive with an older local copy when a user
+	// reconnects. Initialising a changed pair keeps the newest side and the
+	// conflict flags preserve equal-time disagreements as visible copies.
+	baseline := exec.CommandContext(ctx, rclonePath, "bisync", localDir, remote,
+		"--resync", "--resync-mode", "newer",
+		"--conflict-resolve", "newer", "--conflict-loser", "num",
+		"--conflict-suffix", "conflict", "--create-empty-src-dirs")
+	if out, err := baseline.CombinedOutput(); err != nil {
+		return fmt.Errorf("initial sync failed: %w: %s", err, out)
+	}
+	return nil
+}
+
+// SyncOnce runs a single production-flagged bisync pass. The systemd timer
+// script is the normal path for players; this exists so CI can prove the
+// same flags move a save from one side of the mirror to the other without
+// waiting on a timer.
+//
+// When the initial baseline was empty, rclone bisync can critical-abort the
+// first real sync with "empty prior Path1 listing" even though the local
+// folder now has saves. That is exit 7 and is not fixed by --resilient alone.
+// Matching the timer script, we re-baseline with --resync-mode newer when
+// local still has files so the first campaign save is not stuck forever.
+func SyncOnce(ctx context.Context, remoteName, remoteSubfolder, localDir string) error {
+	if runtime.GOOS != "linux" {
+		return fmt.Errorf("bisync is only needed on Linux")
+	}
+	rclonePath, err := rcloneutil.Path()
+	if err != nil {
+		return fmt.Errorf("rclone is not installed")
+	}
+	remote := remoteSpec(remoteName, remoteSubfolder)
+	cmd := exec.CommandContext(ctx, rclonePath, "bisync", localDir, remote,
+		"--resilient", "--recover", "--max-lock", "2m",
+		"--conflict-resolve", "newer", "--conflict-loser", "num",
+		"--conflict-suffix", "conflict",
+		"--create-empty-src-dirs", "--drive-skip-gdocs")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	if exitCode(err) == 7 && dirHasRegularFiles(localDir) {
+		if baseErr := EstablishBaseline(ctx, remoteName, remoteSubfolder, localDir, remoteSubfolder == ""); baseErr != nil {
+			return fmt.Errorf("sync once failed: %w: %s; resync recovery also failed: %v", err, out, baseErr)
+		}
+		return nil
+	}
+	return fmt.Errorf("sync once failed: %w: %s", err, out)
+}
+
+func exitCode(err error) int {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode()
+	}
+	return -1
+}
+
+func dirHasRegularFiles(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.Type().IsRegular() {
+			return true
+		}
+	}
+	return false
 }
 
 // EnsureMirror establishes (or re-establishes) a bisync baseline between
@@ -319,7 +439,7 @@ func EnsureMirror(ctx context.Context, remoteName, remoteSubfolder, localDir str
 	if err := os.MkdirAll(filepath.Dir(scriptPath), 0o755); err != nil {
 		return err
 	}
-	remote := remoteName + ":" + remoteSubfolder
+	remote := remoteSpec(remoteName, remoteSubfolder)
 	syncFolderName := filepath.Base(filepath.Clean(localDir))
 	// Trash lives next to the log, never inside the shared save folder.
 	externalTrash := filepath.Join(filepath.Dir(logPath), "save-trash")
@@ -332,16 +452,8 @@ func EnsureMirror(ctx context.Context, remoteName, remoteSubfolder, localDir str
 	alreadyInitialised := strings.Contains(current, "\nLOCAL="+shellQuote(localDir)+"\n") &&
 		strings.Contains(current, "\nREMOTE="+shellQuote(remote)+"\n")
 	if !alreadyInitialised {
-		// "newer" is deliberate. Bare --resync defaults to path1 and can
-		// overwrite a newer save on Drive with an older local copy when a user
-		// reconnects. Initialising a changed pair keeps the newest side and the
-		// conflict flags preserve equal-time disagreements as visible copies.
-		baseline := exec.CommandContext(ctx, rclonePath, "bisync", localDir, remote,
-			"--resync", "--resync-mode", "newer",
-			"--conflict-resolve", "newer", "--conflict-loser", "num",
-			"--conflict-suffix", "conflict", "--create-empty-src-dirs")
-		if out, err := baseline.CombinedOutput(); err != nil {
-			return fmt.Errorf("initial sync failed: %w: %s", err, out)
+		if err := EstablishBaseline(ctx, remoteName, remoteSubfolder, localDir, remoteRootIsSyncFolder); err != nil {
+			return err
 		}
 	}
 	if err := os.WriteFile(scriptPath, []byte(desiredScript), 0o755); err != nil {

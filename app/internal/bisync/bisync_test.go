@@ -86,8 +86,9 @@ func TestSyncScriptIsValidShellAndQuotesPaths(t *testing.T) {
 	// A bare `--resync` on any failure would let a transient network error
 	// overwrite the other player's newer saves.
 	for _, want := range []string{
-		`if [ "$status" -eq 7 ] && [ -z "$(find "$LOCAL" -mindepth 1 -maxdepth 1 \`,
+		`if [ "$status" -eq 7 ]; then`,
 		"--resync-mode path2",
+		"--resync-mode newer",
 		"--resilient",
 		"--recover",
 		"--max-lock 2m",
@@ -113,17 +114,14 @@ func TestSyncScriptIsValidShellAndQuotesPaths(t *testing.T) {
 	}
 }
 
-// Guarding the resync only matters if it's genuinely unreachable when the
-// folder has saves in it. Run the real generated script against a stub
-// rclone that always reports the critical-abort exit code.
-func TestScriptDoesNotResyncWhenLocalFolderHasSaves(t *testing.T) {
+// Exit 7 recovery is load-bearing: empty local uses path2, local-with-saves
+// uses newer (empty-baseline first-save case). Stub rclone always exits 7.
+func TestScriptResyncRecoveryModes(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the generated script only ever runs on Linux")
 	}
 	dir := t.TempDir()
 	stub := dir + "/rclone"
-	// Records every invocation, and always fails the way rclone does when
-	// it needs a --resync to recover.
 	if err := writeFile(stub, "#!/bin/sh\necho \"$@\" >> "+dir+"/calls\nexit 7\n"); err != nil {
 		t.Fatal(err)
 	}
@@ -141,17 +139,19 @@ func TestScriptDoesNotResyncWhenLocalFolderHasSaves(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := exec.Command("sh", script).CombinedOutput()
-	if err == nil {
-		t.Fatalf("expected the script to report the failure, got success: %s", out)
+	// Local has saves: recover with --resync-mode newer (not path2).
+	if _, err := exec.Command("sh", script).CombinedOutput(); err == nil {
+		t.Fatal("stub always exits 7, so the script should still fail after recovery")
 	}
-
 	calls, _ := readFile(dir + "/calls")
-	if strings.Contains(calls, "--resync") {
-		t.Fatalf("script ran --resync with real saves present, which can overwrite the other player:\n%s", calls)
+	if !strings.Contains(calls, "--resync") || !strings.Contains(calls, "--resync-mode newer") {
+		t.Fatalf("local-with-saves recovery should resync with newer:\n%s", calls)
+	}
+	if strings.Contains(calls, "--resync-mode path2") {
+		t.Fatalf("local-with-saves recovery must not use path2:\n%s", calls)
 	}
 
-	// And the opposite case: an empty folder is the one place it's safe.
+	// Empty local: path2 is safe.
 	if err := removeAll(dir + "/calls"); err != nil {
 		t.Fatal(err)
 	}
@@ -162,9 +162,6 @@ func TestScriptDoesNotResyncWhenLocalFolderHasSaves(t *testing.T) {
 		t.Fatal("stub always exits 7, so the script should still fail")
 	}
 	calls, _ = readFile(dir + "/calls")
-	if !strings.Contains(calls, "--resync") {
-		t.Fatalf("empty folder should have triggered the safe --resync:\n%s", calls)
-	}
 	if !strings.Contains(calls, "--resync-mode path2") {
 		t.Fatalf("empty-folder recovery must make the remote side authoritative:\n%s", calls)
 	}
@@ -173,5 +170,14 @@ func TestScriptDoesNotResyncWhenLocalFolderHasSaves(t *testing.T) {
 func TestMinimumRcloneVersionCoversGeneratedFlags(t *testing.T) {
 	if MinRcloneMajor != 1 || MinRcloneMinor < 71 {
 		t.Fatalf("minimum rclone is %d.%d; generated bisync flags require 1.71+", MinRcloneMajor, MinRcloneMinor)
+	}
+}
+
+func TestRemoteSpecJoinsOptionalSubfolder(t *testing.T) {
+	if got := remoteSpec("gdrive", ""); got != "gdrive:" {
+		t.Fatalf("empty = %q", got)
+	}
+	if got := remoteSpec("gdrive", "Shogun2SaveSync"); got != "gdrive:Shogun2SaveSync" {
+		t.Fatalf("sub = %q", got)
 	}
 }
