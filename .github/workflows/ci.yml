@@ -239,6 +239,11 @@ jobs:
             /usr/lib/shogun2sync/rclone version | grep -Fq "rclone v1.74.4"
           '
           docker run --rm -v "$package_dir:/packages:ro" archlinux:latest bash -euxc '
+            # The base image ships no package database, so pacman -U alone
+            # cannot resolve gtk3 or webkit2gtk-4.1. Arch does not support
+            # partial upgrades, so refresh and upgrade in one transaction
+            # before installing, exactly as a real user would.
+            pacman -Syu --noconfirm
             pacman -U --noconfirm /packages/shogun2sync-*.pkg.tar.zst
             command -v xdg-open
             command -v systemctl
