@@ -49,7 +49,7 @@ jobs:
 
   release:
     needs: quality-windows
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, dominus]
     permissions:
       attestations: write
       contents: write

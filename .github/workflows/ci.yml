@@ -16,7 +16,7 @@ on:
 
 jobs:
   test-linux:
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, dominus]
     steps:
       - uses: actions/checkout@v4
 
@@ -294,7 +294,7 @@ jobs:
         run: go test ./...
 
   build-windows-cross:
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, dominus]
     steps:
       - uses: actions/checkout@v4
 
