@@ -25,11 +25,25 @@ TRIPLET_LIB=/usr/lib/x86_64-linux-gnu
 WEBKIT_LIBEXEC="$TRIPLET_LIB/webkit2gtk-4.1"
 
 export DEBIAN_FRONTEND=noninteractive
+# Packages we install for their content (not only as dependencies of a library
+# pulled in via ldd). Their names are always seeded into the redistribution
+# notice: some of their files are generated or diverted and dpkg -S will not
+# attribute them (notably /etc/ssl/certs/ca-certificates.crt).
+EXPLICIT_BUNDLE_PACKAGES=(
+  adwaita-icon-theme
+  ca-certificates
+  glib-networking
+  gsettings-desktop-schemas
+  libgdk-pixbuf-2.0-0
+  libglib2.0-bin
+  libgtk-3-0
+  libsoup-3.0-0
+  libwebkit2gtk-4.1-0
+  shared-mime-info
+)
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
-  adwaita-icon-theme ca-certificates glib-networking gsettings-desktop-schemas \
-  libgdk-pixbuf-2.0-0 libgtk-3-0 libsoup-3.0-0 libwebkit2gtk-4.1-0 \
-  libglib2.0-bin shared-mime-info >/dev/null
+  "${EXPLICIT_BUNDLE_PACKAGES[@]}" >/dev/null
 
 [[ -x "$APP_DIR/build/bin/shogun2sync" ]] \
   || { echo "the Linux binary must be built before its runtime" >&2; exit 1; }
@@ -57,9 +71,32 @@ is_host_owned() {
   esac
 }
 
+# Every host path we ship a copy of is recorded here so the redistribution
+# notice can name the owning package without reverse-mapping the bundle tree.
+HOST_INVENTORY="$(mktemp)"
+trap 'rm -f "$HOST_INVENTORY"' EXIT
+# dpkg's file database lists the /usr-merged real path. ldd often prints the
+# /lib/x86_64-linux-gnu alias, which dpkg -S will not match, so always record
+# the canonical path.
+record_host_path() {
+  local path="$1" resolved
+  [[ -e "$path" || -L "$path" ]] || return 0
+  resolved="$(readlink -f "$path" 2>/dev/null || true)"
+  printf '%s\0' "${resolved:-$path}" >> "$HOST_INVENTORY"
+}
+record_host_tree() {
+  local root="$1" path resolved
+  [[ -d "$root" ]] || return 0
+  while IFS= read -r -d '' path; do
+    resolved="$(readlink -f "$path" 2>/dev/null || true)"
+    printf '%s\0' "${resolved:-$path}" >> "$HOST_INVENTORY"
+  done < <(find "$root" -type f -print0)
+}
+
 echo "==> Copying WebKitGTK helper processes"
 # WebKitGTK is multi-process. The UI process execs these by absolute path.
 cp -a "$WEBKIT_LIBEXEC" "$BUNDLE/lib/webkit2gtk-4.1"
+record_host_tree "$WEBKIT_LIBEXEC"
 
 echo "==> Walking the shared library closure"
 bundled=0
@@ -70,6 +107,7 @@ while read -r object; do
     continue
   fi
   cp -L "$object" "$BUNDLE/lib/${object##*/}"
+  record_host_path "$object"
   bundled=$((bundled + 1))
 done < <(
   {
@@ -85,19 +123,28 @@ echo "    bundled $bundled objects, left $host_owned to the host"
 # webview or the Google Drive login makes fails with "TLS support unavailable".
 echo "==> Copying GIO modules"
 cp -a "$TRIPLET_LIB/gio" "$BUNDLE/lib/gio"
+record_host_tree "$TRIPLET_LIB/gio"
 [[ -e "$BUNDLE/lib/gio/modules/libgiognutls.so" ]] \
   || { echo "the GIO TLS backend is missing from the bundle" >&2; exit 1; }
 
 echo "==> Copying dlopen-only module directories"
 cp -a "$TRIPLET_LIB/gdk-pixbuf-2.0" "$BUNDLE/lib/gdk-pixbuf-2.0"
-[[ -d "$TRIPLET_LIB/gtk-3.0" ]] && cp -a "$TRIPLET_LIB/gtk-3.0" "$BUNDLE/lib/gtk-3.0"
+record_host_tree "$TRIPLET_LIB/gdk-pixbuf-2.0"
+if [[ -d "$TRIPLET_LIB/gtk-3.0" ]]; then
+  cp -a "$TRIPLET_LIB/gtk-3.0" "$BUNDLE/lib/gtk-3.0"
+  record_host_tree "$TRIPLET_LIB/gtk-3.0"
+fi
 
 echo "==> Copying schemas, MIME data, icons and CA certificates"
 mkdir -p "$BUNDLE/share/glib-2.0" "$BUNDLE/share/ca-certificates"
 cp -a /usr/share/glib-2.0/schemas "$BUNDLE/share/glib-2.0/schemas"
+record_host_tree /usr/share/glib-2.0/schemas
 cp -a /usr/share/mime "$BUNDLE/share/mime"
+record_host_tree /usr/share/mime
 cp -a /usr/share/icons "$BUNDLE/share/icons"
+record_host_tree /usr/share/icons
 cp -L /etc/ssl/certs/ca-certificates.crt "$BUNDLE/share/ca-certificates/"
+record_host_path /etc/ssl/certs/ca-certificates.crt
 
 # WebKitGTK 4.1 compiles PKGLIBEXECDIR in as a literal and, unlike the injected
 # bundle path, exposes no environment override: WEBKIT_EXEC_PATH is behind
@@ -200,12 +247,30 @@ BUNDLED PACKAGES
 NOTICE
   # Report the providing package and exact version of everything shipped, so
   # the source above can be matched to the binary that actually went out.
-  # dpkg -S exits non-zero for anything it does not own, which must not abort
-  # the notice, so every lookup is explicitly tolerant.
-  for object in "$BUNDLE"/lib/*.so* "$BUNDLE"/lib/webkit2gtk-4.1/*; do
-    [[ -f "$object" ]] || continue
-    dpkg -S "$TRIPLET_LIB/${object##*/}" 2>/dev/null | cut -d: -f1 || true
-  done | sort -u > /tmp/bundled-packages.txt
+  # Paths were recorded at copy time (shared libraries, WebKit helpers, GIO
+  # / gdk-pixbuf / GTK modules, schemas, MIME data, icons, certificates) —
+  # not reconstructed from top-level .so names only. dpkg -S exits non-zero
+  # for anything it does not own; that must not abort the notice.
+  {
+    # Seed with packages we installed for content that dpkg -S may miss
+    # (generated files, diversions).
+    printf '%s\n' "${EXPLICIT_BUNDLE_PACKAGES[@]}"
+    if [[ -s "$HOST_INVENTORY" ]]; then
+      # Batch the lookups: one dpkg -S process per chunk is far cheaper than
+      # thousands of individual invocations for the icon tree.
+      xargs -0 -n 80 dpkg -S < "$HOST_INVENTORY" 2>/dev/null \
+        | cut -d: -f1 || true
+    fi
+  } | sort -u > /tmp/bundled-packages.txt
+
+  # These packages are load-bearing for HTTPS, schemas, MIME and icons.
+  # If the inventory ever regresses to top-level .so files only, fail here
+  # rather than ship a notice that understates the redistribution.
+  for required in "${EXPLICIT_BUNDLE_PACKAGES[@]}"; do
+    grep -qx "$required" /tmp/bundled-packages.txt \
+      || { echo "bundled-runtime notice is missing package: $required" >&2; exit 1; }
+  done
+
   while read -r package; do
     [[ -n "$package" ]] || continue
     printf '  %-40s %s\n' \
@@ -216,16 +281,16 @@ NOTICE
   echo "------------------"
   echo "The complete licence text for each package as shipped by Debian follows."
   echo
-  for copyright in /usr/share/doc/libwebkit2gtk-4.1-0/copyright \
-                   /usr/share/doc/libgtk-3-0/copyright \
-                   /usr/share/doc/libsoup-3.0-0/copyright; do
+  while read -r package; do
+    [[ -n "$package" ]] || continue
+    copyright="/usr/share/doc/$package/copyright"
     [[ -r "$copyright" ]] || continue
     echo "=============================================================="
     echo "$copyright"
     echo "=============================================================="
     cat "$copyright"
     echo
-  done
+  done < /tmp/bundled-packages.txt
 } > "$BUNDLE/WEBKITGTK-NOTICE.txt"
 
 echo "==> Verifying nothing host-owned was bundled"

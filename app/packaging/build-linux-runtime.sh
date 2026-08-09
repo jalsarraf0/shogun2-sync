@@ -39,9 +39,22 @@ for required in \
   "$BUNDLE/lib/webkit2gtk-4.1/WebKitNetworkProcess" \
   "$BUNDLE/lib/gio/modules/libgiognutls.so" \
   "$BUNDLE/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache" \
-  "$BUNDLE/share/glib-2.0/schemas/gschemas.compiled"; do
+  "$BUNDLE/share/glib-2.0/schemas/gschemas.compiled" \
+  "$BUNDLE/WEBKITGTK-NOTICE.txt"; do
   [[ -e "$required" ]] \
     || { echo "the runtime bundle is missing $required" >&2; exit 1; }
+done
+
+# The notice must inventory nested modules and share data, not only the ldd
+# closure. These packages only appear when those trees are recorded.
+for package in \
+  glib-networking \
+  gsettings-desktop-schemas \
+  shared-mime-info \
+  adwaita-icon-theme \
+  ca-certificates; do
+  grep -Eq "^  ${package}[[:space:]]" "$BUNDLE/WEBKITGTK-NOTICE.txt" \
+    || { echo "WEBKITGTK-NOTICE.txt is missing package: $package" >&2; exit 1; }
 done
 
 # A bundle that still points at Debian's own libexec directory would silently
