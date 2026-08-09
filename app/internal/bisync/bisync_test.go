@@ -33,11 +33,11 @@ func TestSystemdQuoteProtectsSpecialCharacters(t *testing.T) {
 // failure this guard exists to prevent.
 func TestServiceSkipsAfterBundledRcloneIsUninstalled(t *testing.T) {
 	unit := serviceUnit(
-		`/usr/local/lib/shogun2sync/rclone`,
+		`/opt/shogun2sync/rclone`,
 		`/bin/sh`,
 		`/home/ken/.config/shogun2sync/gdrive-bisync.sh`,
 	)
-	if !strings.Contains(unit, "\nConditionFileIsExecutable=/usr/local/lib/shogun2sync/rclone\n") {
+	if !strings.Contains(unit, "\nConditionFileIsExecutable=/opt/shogun2sync/rclone\n") {
 		t.Fatalf("service does not guard its bundled rclone path:\n%s", unit)
 	}
 	if strings.Contains(unit, "ConditionPathIsExecutable") {

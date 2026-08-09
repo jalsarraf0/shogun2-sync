@@ -56,10 +56,32 @@ linux_extract="$(mktemp -d)"
 trap 'rm -rf "$windows_extract" "$linux_extract"' EXIT
 sh "$LINUX_INSTALLER" --quiet --target "$linux_extract" --noexec
 for file in shogun2sync rclone install.sh LICENSE rclone-COPYING \
-    GO-THIRD-PARTY-NOTICES.txt shogun2sync.desktop appicon-512.png; do
+    GO-THIRD-PARTY-NOTICES.txt shogun2sync.desktop appicon-512.png \
+    runtime/shogun2sync.sh runtime/WEBKITGTK-NOTICE.txt \
+    runtime/lib/libwebkit2gtk-4.1.so.0 runtime/lib/libgtk-3.so.0 \
+    runtime/lib/webkit2gtk-4.1/WebKitWebProcess \
+    runtime/lib/webkit2gtk-4.1/WebKitNetworkProcess \
+    runtime/lib/gio/modules/libgiognutls.so \
+    runtime/share/glib-2.0/schemas/gschemas.compiled; do
   [[ -s "$linux_extract/$file" ]] \
     || { echo "Linux installer file missing: $file" >&2; exit 1; }
 done
+
+# Shipping the host's glibc or graphics stack is what breaks a bundle on a
+# foreign distribution, so prove none of it came along.
+for forbidden in libc.so.6 libstdc++.so.6 libGL.so.1 libX11.so.6 \
+    libfontconfig.so.1 ld-linux-x86-64.so.2; do
+  [[ ! -e "$linux_extract/runtime/lib/$forbidden" ]] \
+    || { echo "Linux runtime must not bundle $forbidden" >&2; exit 1; }
+done
+
+# The helper path must point into the install prefix, not at Debian's.
+grep -aFq '/opt/shogun2sync/lib/webkit2gtk-4.1' \
+  "$linux_extract/runtime/lib/libwebkit2gtk-4.1.so.0" \
+  || { echo "bundled WebKitGTK was not repointed at the install prefix" >&2; exit 1; }
+! grep -aFq '/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1' \
+  "$linux_extract/runtime/lib/libwebkit2gtk-4.1.so.0" \
+  || { echo "bundled WebKitGTK still refers to Debian's helper directory" >&2; exit 1; }
 
 echo "==> Verifying checksums"
 (

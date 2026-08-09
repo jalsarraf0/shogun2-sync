@@ -138,8 +138,17 @@ npm run build --prefix frontend
   "$APP_DIR/build/bin/GO-THIRD-PARTY-NOTICES.txt" \
   "$APP_DIR/build/bin/shogun2sync"
 
+# The one-file installer carries its own GTK/WebKitGTK, so the runtime has to
+# exist before it can be packaged.
+"$SCRIPT_DIR/build-linux-runtime.sh"
+
 echo "==> Building one-file Linux installer"
 "$SCRIPT_DIR/build-linux-installer.sh" \
+  "$DIST_DIR/shogun2sync-linux-amd64.run"
+
+# Never publish a .run that quietly depends on the host's GUI stack. This
+# installs and launches it on four distributions with networking disabled.
+"$SCRIPT_DIR/verify-linux-offline.sh" \
   "$DIST_DIR/shogun2sync-linux-amd64.run"
 
 "$SCRIPT_DIR/build-windows-installer.sh"
