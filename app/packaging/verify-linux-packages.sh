@@ -98,7 +98,9 @@ mkdir -p "$extract_dir/deb" "$extract_dir/rpm" "$extract_dir/arch"
 dpkg-deb -x "$DEB" "$extract_dir/deb"
 (
   cd "$extract_dir/rpm"
-  rpm2cpio "$RPM" | cpio -idmu --quiet
+  # GNU cpio honours absolute paths from the archive in copy-in mode, so
+  # without this it tries to write the package straight into the real /usr.
+  rpm2cpio "$RPM" | cpio -idmu --quiet --no-absolute-filenames
 )
 tar --zstd -xf "$ARCH" -C "$extract_dir/arch"
 
