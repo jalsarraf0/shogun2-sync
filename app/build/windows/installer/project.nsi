@@ -190,6 +190,19 @@ Section
     File "/oname=WebView2-LICENSE.html" "tmp\WebView2-LICENSE.html"
     File "/oname=GO-THIRD-PARTY-NOTICES.txt" "tmp\GO-THIRD-PARTY-NOTICES.txt"
 
+    # Fail the install if the private sync engine did not land runnable.
+    # A successful UI with no working rclone is worse than a loud abort.
+    SetDetailsPrint both
+    DetailPrint "Verifying bundled rclone..."
+    ClearErrors
+    ExecWait '"$INSTDIR\rclone.exe" version' $0
+    ${If} ${Errors}
+    ${OrIf} $0 != 0
+        !insertmacro shogun2sync.webview2fail "The installer could not run the bundled rclone.exe (exit $0). Antivirus may have blocked it — allow the file and re-run setup."
+        SetErrorLevel 1
+        Abort
+    ${EndIf}
+
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
 

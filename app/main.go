@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"embed"
+	"fmt"
 	"os"
+	"time"
 
 	"shogun2sync/internal/applog"
+	"shogun2sync/internal/selfcheck"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -17,6 +21,19 @@ import (
 var assets embed.FS
 
 func main() {
+	// Headless install/CI probe: prove the installed tree can sync before
+	// anyone has to open a window. Exit 0 only when every fatal check passes.
+	if wantsSelfCheck(os.Args[1:]) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		report := selfcheck.Run(ctx)
+		fmt.Fprint(os.Stdout, selfcheck.Format(report))
+		if !report.OK {
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Everything the app logs goes to a file as well as the terminal, so a
 	// player who hits trouble has something concrete to send us. Without
 	// this, a GUI app launched from a desktop icon drops its log output on
@@ -66,4 +83,14 @@ func main() {
 		closeLog()
 		os.Exit(1)
 	}
+}
+
+func wantsSelfCheck(args []string) bool {
+	for _, a := range args {
+		switch a {
+		case "--self-check", "-self-check", "/self-check":
+			return true
+		}
+	}
+	return false
 }

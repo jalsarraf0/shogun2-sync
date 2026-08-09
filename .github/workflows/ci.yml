@@ -418,6 +418,17 @@ jobs:
             throw 'Current-user uninstall record is missing'
           }
 
+          # Headless proof the installed tree can sync (rclone sibling, config
+          # dir, etc.) before we bother launching the GUI.
+          $selfCheck = & (Join-Path $installDir 'shogun2sync.exe') --self-check 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installed application failed --self-check (exit $LASTEXITCODE):`n$selfCheck"
+          }
+          if ($selfCheck -notmatch 'ready to use') {
+            throw "Installed application --self-check output unexpected:`n$selfCheck"
+          }
+          Write-Host $selfCheck
+
           $app = Start-Process -FilePath (Join-Path $installDir 'shogun2sync.exe') -PassThru
           Start-Sleep -Seconds 10
           if ($app.HasExited) {

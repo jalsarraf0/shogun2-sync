@@ -38,6 +38,32 @@ when the computer is offline. No separate dependency download is required.
 The uninstaller removes everything it installed, including that private
 rclone. This release does not include a macOS or ARM build.
 
+### If Windows blocks the download or installer
+
+The Windows build is **not code-signed** (no Microsoft tax). That does not
+mean the package is incomplete — only that Windows has not been paid to trust
+it yet. On Windows 10 you can almost always proceed:
+
+1. If SmartScreen says “Windows protected your PC”: click **More info**, then
+   **Run anyway**.
+2. If double-click does nothing useful: right-click the `.exe` →
+   **Properties** → tick **Unblock** at the bottom → **OK**, then run it again.
+3. Optional integrity check in PowerShell (from the folder with both files):
+
+```powershell
+Get-FileHash .\shogun2sync-windows-amd64-installer.exe -Algorithm SHA256
+Select-String shogun2sync-windows-amd64-installer.exe .\SHA256SUMS
+```
+
+The hashes must match. After install you can also run a headless proof that
+rclone and the config directory are ready:
+
+```text
+"%LOCALAPPDATA%\Programs\Shogun 2 Save Sync\shogun2sync.exe" --self-check
+```
+
+Exit code 0 and “ready to use” means the install is good.
+
 The Linux artifacts target Debian 12, Ubuntu 24.04 or newer, currently
 supported Fedora/Nobara releases, and current Arch Linux. There are two shapes,
 and they make opposite trade-offs on purpose. Installing the `.deb`, `.rpm`, or
