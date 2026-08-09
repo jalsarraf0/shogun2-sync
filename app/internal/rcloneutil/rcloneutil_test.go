@@ -15,6 +15,18 @@ import (
 	"testing"
 )
 
+func TestRemotePathJoinsOptionalSubfolder(t *testing.T) {
+	if got := remotePath("drive", ""); got != "drive:" {
+		t.Fatalf("empty rel = %q", got)
+	}
+	if got := remotePath("drive", "Shogun2SaveSync"); got != "drive:Shogun2SaveSync" {
+		t.Fatalf("single = %q", got)
+	}
+	if got := remotePath("drive", "/nested/path/"); got != "drive:nested/path" {
+		t.Fatalf("trimmed = %q", got)
+	}
+}
+
 func TestRedactArgsAndErrorText(t *testing.T) {
 	const (
 		token  = `{"access_token":"access-value","refresh_token":"refresh-value"}`

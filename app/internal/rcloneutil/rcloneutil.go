@@ -664,40 +664,10 @@ func ResolveSyncSubfolder(ctx context.Context, remoteName, subfolder string, isG
 		return "", fmt.Errorf("sync folder name is empty")
 	}
 	if isGuest {
-		// If a previous bug nested the folder name under the shared root and
-		// the root itself has no saves, mirror the existing nested folder so
-		// both players still see the campaign. Setup flattens the local side.
-		hasSaves, err := remoteLooksLikeSaveFolder(ctx, remoteName, "")
-		if err != nil {
-			return "", err
-		}
-		if hasSaves {
-			return "", nil
-		}
-		nested, err := remoteHasChild(ctx, remoteName, "", subfolder)
-		if err != nil {
-			return "", err
-		}
-		if nested {
-			// Peel a single same-name nesting level if that is where the saves sit.
-			if ok, err := remoteLooksLikeSaveFolder(ctx, remoteName, subfolder); err == nil && ok {
-				return subfolder, nil
-			}
-			// Walk a few levels of name/name/... left by older builds.
-			path := subfolder
-			for i := 0; i < 8; i++ {
-				next := path + "/" + subfolder
-				ok, err := remoteHasChild(ctx, remoteName, path, subfolder)
-				if err != nil || !ok {
-					break
-				}
-				if saves, err := remoteLooksLikeSaveFolder(ctx, remoteName, next); err == nil && saves {
-					return next, nil
-				}
-				path = next
-			}
-			return subfolder, nil
-		}
+		// The shared folder IS the sync folder. Never append the subfolder
+		// name — that recreates Shogun2SaveSync/Shogun2SaveSync nesting.
+		// Nested trees left by older builds are flattened on the local side
+		// (orchestrate.FlattenSameNameNesting + the timer's flatten_nested).
 		return "", nil
 	}
 

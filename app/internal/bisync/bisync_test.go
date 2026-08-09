@@ -69,7 +69,7 @@ func TestSyncScriptIsValidShellAndQuotesPaths(t *testing.T) {
 		t.Skip("the generated script only ever runs on Linux")
 	}
 	awkward := "/home/o'brien/Google Drive 100%"
-	script := syncScript("/usr/bin/rclone", awkward, "gdrive:Shogun2SaveSync", "/tmp/x.log", "Shogun2SaveSync")
+	script := syncScript("/usr/bin/rclone", awkward, "gdrive:Shogun2SaveSync", "/tmp/x.log", "Shogun2SaveSync", "/tmp/save-trash")
 
 	// `sh -n` parses without executing: catches any quoting mistake that
 	// would otherwise only show up as a broken timer on someone's machine.
@@ -93,12 +93,23 @@ func TestSyncScriptIsValidShellAndQuotesPaths(t *testing.T) {
 		"--max-lock 2m",
 		"--conflict-resolve newer",
 		"flatten_nested",
-		".shogun2sync-sync.lock",
+		"sync.lock",
 		`"$n" -gt 3`,
+		"deletefile",
+		"save-trash",
+		"--filter '- .shogun2sync-*/**'",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("script is missing %q:\n%s", want, script)
 		}
+	}
+	// The lock and prune trash must not live inside the save folder — that
+	// makes bisync abort on mass-delete and surfaces junk in the game UI.
+	if strings.Contains(script, `LOCK="$LOCAL/.shogun2sync-sync.lock"`) {
+		t.Error("sync lock must not live inside the shared save folder")
+	}
+	if strings.Contains(script, `trash="$LOCAL/.shogun2sync-trash"`) {
+		t.Error("save trash must not live inside the shared save folder")
 	}
 }
 
@@ -126,7 +137,7 @@ func TestScriptDoesNotResyncWhenLocalFolderHasSaves(t *testing.T) {
 	}
 
 	script := dir + "/sync.sh"
-	if err := writeFile(script, syncScript(stub, local, "gdrive:Shogun2SaveSync", dir+"/log", "Shogun2SaveSync")); err != nil {
+	if err := writeFile(script, syncScript(stub, local, "gdrive:Shogun2SaveSync", dir+"/log", "Shogun2SaveSync", dir+"/trash")); err != nil {
 		t.Fatal(err)
 	}
 

@@ -134,9 +134,12 @@ ExecStart=%s %s
 // the shell's), and gets both a percent sign and an apostrophe in a path
 // wrong. A file has neither problem and is also something a player can
 // read when they want to know what's running on their machine.
-func syncScript(rclonePath, localDir, remote, logPath, syncFolderName string) string {
+func syncScript(rclonePath, localDir, remote, logPath, syncFolderName, externalTrash string) string {
 	if strings.TrimSpace(syncFolderName) == "" {
 		syncFolderName = "Shogun2SaveSync"
+	}
+	if strings.TrimSpace(externalTrash) == "" {
+		externalTrash = filepath.Join(filepath.Dir(logPath), "save-trash")
 	}
 	// Percent signs doubled for fmt.Sprintf (shell date/stat formats).
 	return fmt.Sprintf(`#!/bin/sh
@@ -148,6 +151,7 @@ LOCAL=%s
 REMOTE=%s
 LOG=%s
 SYNC_NAME=%s
+TRASH=%s
 
 # Keep support logs useful without allowing an unattended timer to grow one
 # forever. One previous generation is enough for diagnosing a recurring job.
@@ -178,10 +182,10 @@ flatten_nested() {
 flatten_nested "$LOCAL" "$SYNC_NAME"
 
 # Cooperative lock so both players' 30s timers do not bisync at the same
-# instant. mkdir is atomic; the holder runs, the other exits 0 and retries
-# on the next tick. Stale locks older than 90s are stolen so a crashed
-# client cannot block forever.
-LOCK="$LOCAL/.shogun2sync-sync.lock"
+# instant. Lives beside the log (never inside the save folder) so the game
+# and bisync never see it. mkdir is atomic; stale locks older than 90s are
+# stolen so a crashed client cannot block forever.
+LOCK="$(dirname "$LOG")/sync.lock"
 lock_now=$(date +%%s)
 if [ -d "$LOCK" ]; then
   lock_age=$((lock_now - $(stat -c %%Y "$LOCK" 2>/dev/null || echo 0)))
@@ -198,20 +202,25 @@ fi
 release_lock() { rmdir "$LOCK" 2>/dev/null || rm -rf "$LOCK" 2>/dev/null; }
 trap release_lock EXIT INT TERM
 
+# Filter rules keep the lock/trash out of the shared folder if a prior build
+# left them there, and ignore any other app-private dot dirs.
 "$RCLONE" bisync "$LOCAL" "$REMOTE" \
   --resilient --recover --max-lock 2m \
   --conflict-resolve newer --conflict-loser num --conflict-suffix conflict \
   --create-empty-src-dirs --drive-skip-gdocs \
+  --filter '- .shogun2sync-*/**' --filter '- .shogun2sync-*' \
+  --filter '- .shogun2sync-sync.lock/**' --filter '- .shogun2sync-sync.lock' \
   --log-file "$LOG" --log-format date,time -v
 status=$?
 
 if [ "$status" -eq 0 ]; then
-  # Keep only the 3 newest save files in the shared folder. Older campaign
-  # turns move into a recoverable trash directory — never hard-deleted.
-  trash="$LOCAL/.shogun2sync-trash"
-  mkdir -p "$trash"
+  # Keep only the 3 newest save files. Older turns go to an EXTERNAL trash
+  # (outside the sync tree) and are deleted on the remote in the same step.
+  # Trashing inside LOCAL would make the next bisync see a mass delete and
+  # hit rclone's >50%% safety abort — which is exactly how a "keep 3" feature
+  # would otherwise brick the timer after the first successful prune.
+  mkdir -p "$TRASH"
   n=0
-  # Newest first. Top-level campaign saves only; leave conflict copies for Recover.
   find "$LOCAL" -maxdepth 1 -type f \( -name '*.save' -o -name '*.save_multiplayer' \) -printf '%%T@\t%%p\0' 2>/dev/null \
     | sort -nzr \
     | while IFS= read -r -d '' line; do
@@ -220,9 +229,21 @@ if [ "$status" -eq 0 ]; then
         n=$((n + 1))
         if [ "$n" -gt 3 ]; then
           base=$(basename "$path")
-          mv "$path" "$trash/$(date +%%s)-$$-$base" 2>/dev/null || true
+          # Delete on Drive first so the next bisync does not re-download it.
+          "$RCLONE" deletefile "$REMOTE/$base" --drive-skip-gdocs 2>/dev/null || true
+          mv "$path" "$TRASH/$(date +%%s)-$$-$base" 2>/dev/null || true
         fi
       done
+  # Drop in-folder trash left by older builds so it cannot re-enter the mirror.
+  if [ -d "$LOCAL/.shogun2sync-trash" ]; then
+    mkdir -p "$TRASH"
+    find "$LOCAL/.shogun2sync-trash" -type f -print0 2>/dev/null \
+      | while IFS= read -r -d '' f; do
+          mv "$f" "$TRASH/$(date +%%s)-$$-$(basename "$f")" 2>/dev/null || true
+        done
+    rm -rf "$LOCAL/.shogun2sync-trash"
+  fi
+  rm -rf "$LOCAL/.shogun2sync-sync.lock"
   exit 0
 fi
 
@@ -233,7 +254,7 @@ fi
 # folder with nothing in it -- which is also the case that lands here most
 # often, since bisync treats a legitimately empty folder as
 # indistinguishable from a mount that dropped out.
-# Ignore the lock dir and trash when deciding "empty" — both are ours.
+# Ignore leftover app-private dirs when deciding "empty".
 if [ "$status" -eq 7 ] && [ -z "$(find "$LOCAL" -mindepth 1 -maxdepth 1 \
     ! -name '.shogun2sync-sync.lock' ! -name '.shogun2sync-trash' 2>/dev/null | head -n 1)" ]; then
   # Drop the lock before exec so a replaced process cannot leave it behind.
@@ -241,11 +262,12 @@ if [ "$status" -eq 7 ] && [ -z "$(find "$LOCAL" -mindepth 1 -maxdepth 1 \
   trap - EXIT INT TERM
   exec "$RCLONE" bisync "$LOCAL" "$REMOTE" --resync --resync-mode path2 \
     --create-empty-src-dirs \
+    --filter '- .shogun2sync-*/**' --filter '- .shogun2sync-*' \
     --log-file "$LOG" --log-format date,time -v
 fi
 
 exit "$status"
-`, shellQuote(rclonePath), shellQuote(localDir), shellQuote(remote), shellQuote(logPath), shellQuote(syncFolderName))
+`, shellQuote(rclonePath), shellQuote(localDir), shellQuote(remote), shellQuote(logPath), shellQuote(syncFolderName), shellQuote(externalTrash))
 }
 
 // Paths returns where the generated script and its log live.
@@ -299,7 +321,9 @@ func EnsureMirror(ctx context.Context, remoteName, remoteSubfolder, localDir str
 	}
 	remote := remoteName + ":" + remoteSubfolder
 	syncFolderName := filepath.Base(filepath.Clean(localDir))
-	desiredScript := syncScript(rclonePath, localDir, remote, logPath, syncFolderName)
+	// Trash lives next to the log, never inside the shared save folder.
+	externalTrash := filepath.Join(filepath.Dir(logPath), "save-trash")
+	desiredScript := syncScript(rclonePath, localDir, remote, logPath, syncFolderName, externalTrash)
 	currentScript, _ := os.ReadFile(scriptPath)
 	// Script flags and the bundled rclone path can change during an app
 	// update without changing the mirror pair. Reinitialising merely because
