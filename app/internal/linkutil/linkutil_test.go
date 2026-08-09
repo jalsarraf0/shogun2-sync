@@ -247,3 +247,41 @@ func TestMoveContentsMovesEverythingAndRemovesSrc(t *testing.T) {
 		}
 	}
 }
+
+func TestMoveContentsRejectsOverlappingFolders(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(filepath.Join(src, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "keep.save"), []byte("safe"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, dst := range []string{src, filepath.Join(src, "nested"), dir} {
+		if err := MoveContents(src, dst); err == nil {
+			t.Errorf("MoveContents(%q, %q) should reject overlapping folders", src, dst)
+		}
+		if got, err := os.ReadFile(filepath.Join(src, "keep.save")); err != nil || string(got) != "safe" {
+			t.Fatalf("overlap rejection changed the source: contents=%q err=%v", got, err)
+		}
+	}
+}
+
+func TestCopyPathRefusesToOverwriteDestination(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.save")
+	dst := filepath.Join(dir, "dst.save")
+	if err := os.WriteFile(src, []byte("mine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("theirs"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyPath(src, dst); !os.IsExist(err) {
+		t.Fatalf("copyPath error = %v, want an existence error", err)
+	}
+	if got, err := os.ReadFile(dst); err != nil || string(got) != "theirs" {
+		t.Fatalf("destination was changed: contents=%q err=%v", got, err)
+	}
+}

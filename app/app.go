@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
+	"sync"
 
 	"shogun2sync/internal/applog"
 	"shogun2sync/internal/bisync"
@@ -31,7 +32,15 @@ import (
 func openForOAuth(ctx context.Context, url string) error {
 	if goruntime.GOOS == "linux" {
 		if path, err := exec.LookPath("firefox"); err == nil {
-			return exec.Command(path, url).Start()
+			cmd := exec.Command(path, url)
+			if err := cmd.Start(); err != nil {
+				return err
+			}
+			// Start does not reap the process. Firefox normally hands the URL to
+			// an existing browser and exits immediately, so wait off-thread to
+			// avoid accumulating zombies without delaying the OAuth flow.
+			go func() { _ = cmd.Wait() }()
+			return nil
 		}
 	}
 	runtime.BrowserOpenURL(ctx, url)
@@ -40,7 +49,8 @@ func openForOAuth(ctx context.Context, url string) error {
 
 // App struct
 type App struct {
-	ctx context.Context
+	ctx  context.Context
+	opMu sync.Mutex
 }
 
 // NewApp creates a new App application struct
@@ -63,35 +73,66 @@ type GoogleDriveAuthResult struct {
 	ShareLink string `json:"shareLink,omitempty"` // set when rootFolderID was empty (host flow)
 }
 
+func googleMirrorLocation(rootFolderID, subfolder string) (remoteSubfolder, localDir string, remoteRootIsSyncFolder bool) {
+	remoteRootIsSyncFolder = strings.TrimSpace(rootFolderID) != ""
+	remoteSubfolder = subfolder
+	if remoteRootIsSyncFolder {
+		remoteSubfolder = ""
+	}
+	cfg := config.Config{
+		CloudProvider: "googledrive",
+		CloudRoot:     paths.DefaultCloudRoot("googledrive"),
+		SyncSubfolder: subfolder,
+	}
+	return remoteSubfolder, orchestrate.SyncTarget(cfg), remoteRootIsSyncFolder
+}
+
 // AuthorizeGoogleDrive runs the OAuth loopback flow (see internal/gdrive),
-// then writes the resulting token into an rclone remote named "gdrive"
-// and creates the sync subfolder inside it.
+// then writes the resulting token into an app-owned rclone remote and creates
+// the sync subfolder inside it.
 //
 // rootFolderID is the folder ID from a link a friend shared with you.
 // Leave it empty if you're the one whose Drive is being shared — the
 // subfolder gets created in your own "My Drive" root instead, and a
 // shareable link for it comes back in the result so you can send it on.
-func (a *App) AuthorizeGoogleDrive(rootFolderID, subfolder string) GoogleDriveAuthResult {
+func (a *App) AuthorizeGoogleDrive(rootFolderID, subfolder, clientID, clientSecret string) GoogleDriveAuthResult {
+	a.opMu.Lock()
+	defer a.opMu.Unlock()
+
+	if goruntime.GOOS != "linux" {
+		return GoogleDriveAuthResult{OK: false, Error: "On Windows, choose the local shared folder mirrored by Google Drive for desktop; browser authorization is only needed on Linux."}
+	}
+	rootFolderID = strings.TrimSpace(rootFolderID)
+	subfolder = strings.TrimSpace(subfolder)
+	localRoot := paths.DefaultCloudRoot("googledrive")
+	setupCfg := config.Config{CloudProvider: "googledrive", CloudRoot: localRoot, SyncSubfolder: subfolder}
+	if err := orchestrate.ValidateConfig(setupCfg); err != nil {
+		return GoogleDriveAuthResult{OK: false, Error: err.Error()}
+	}
+	if current, err := config.Load(); err == nil {
+		status := orchestrate.Status(current)
+		if status.LinkedOK && filepath.Clean(status.SyncTarget) != filepath.Clean(orchestrate.SyncTarget(setupCfg)) {
+			return GoogleDriveAuthResult{OK: false, Error: "Your save folder is still linked to a different sync folder. Use Troubleshooting → Stop syncing first, then start the new Google Drive setup."}
+		}
+	}
 	if !rcloneutil.Installed() {
 		return GoogleDriveAuthResult{OK: false, Error: "rclone is not installed"}
 	}
 	// Fail here rather than after the player has gone through a browser
 	// login, only to have the background sync refuse to start.
-	if bisync.Available() {
-		if _, _, err := bisync.Version(a.ctx); err == nil {
-			if err := bisync.CheckVersion(a.ctx); err != nil {
-				return GoogleDriveAuthResult{OK: false, Error: err.Error()}
-			}
-		}
-	}
-
-	cfg, _ := config.Load()
-	creds, err := gdrive.Shared()
-	if err != nil {
+	if err := bisync.CheckVersion(a.ctx); err != nil {
 		return GoogleDriveAuthResult{OK: false, Error: err.Error()}
 	}
-	if id, secret, custom := cfg.GoogleCredentials(); custom {
-		creds = gdrive.Credentials{ClientID: id, ClientSecret: secret}
+
+	creds := gdrive.Credentials{ClientID: strings.TrimSpace(clientID), ClientSecret: strings.TrimSpace(clientSecret)}
+	if creds.ClientID == "" && creds.ClientSecret == "" {
+		var err error
+		creds, err = gdrive.Shared()
+		if err != nil {
+			return GoogleDriveAuthResult{OK: false, Error: err.Error()}
+		}
+	} else if err := creds.Validate(); err != nil {
+		return GoogleDriveAuthResult{OK: false, Error: err.Error()}
 	}
 
 	result, err := gdrive.Authorize(a.ctx, creds, func(url string) error {
@@ -102,35 +143,40 @@ func (a *App) AuthorizeGoogleDrive(rootFolderID, subfolder string) GoogleDriveAu
 		return GoogleDriveAuthResult{OK: false, Error: err.Error()}
 	}
 
-	const remoteName = "gdrive"
-	if err := rcloneutil.ConfigureGoogleDriveRemote(a.ctx, remoteName, rootFolderID, result.TokenJSON, creds.ClientID, creds.ClientSecret); err != nil {
+	remoteName, err := rcloneutil.ConfigureGoogleDriveRemote(a.ctx, rcloneutil.PreferredGoogleDriveRemote,
+		rootFolderID, result.TokenJSON, creds.ClientID, creds.ClientSecret)
+	if err != nil {
 		return GoogleDriveAuthResult{OK: false, Error: fmt.Sprintf("saving rclone config: %v", err)}
 	}
 	if err := rcloneutil.VerifyAccess(a.ctx, remoteName); err != nil {
 		return GoogleDriveAuthResult{OK: false, Error: fmt.Sprintf("could not access the shared folder: %v", err)}
 	}
-	if subfolder != "" {
+	isGuest := rootFolderID != ""
+	if !isGuest {
 		if err := rcloneutil.EnsureSubfolder(a.ctx, remoteName, subfolder); err != nil {
 			return GoogleDriveAuthResult{OK: false, Error: fmt.Sprintf("creating sync folder: %v", err)}
 		}
 	}
 
-	if bisync.Available() && subfolder != "" {
-		// subfolder is never actually empty via the wizard (it defaults to
-		// "Shogun2SaveSync"), but this guard matters: without it, an empty
-		// subfolder would make bisync mirror the user's entire Drive root,
-		// not just a game-saves folder.
-		localDir := paths.DefaultCloudRoot("googledrive")
-		if err := bisync.EnsureMirror(a.ctx, remoteName, subfolder, localDir); err != nil {
-			return GoogleDriveAuthResult{OK: false, Error: fmt.Sprintf("setting up local sync mirror: %v", err)}
-		}
+	// The game always links to localRoot/subfolder. A host mirrors that exact
+	// directory to remote:subfolder. A guest's remote is already scoped to the
+	// shared folder, so it mirrors to remote: without appending the folder name
+	// a second time. This invariant keeps both players on the same directory.
+	remoteSubfolder, localDir, _ := googleMirrorLocation(rootFolderID, subfolder)
+	if err := bisync.EnsureMirror(a.ctx, remoteName, remoteSubfolder, localDir, isGuest); err != nil {
+		return GoogleDriveAuthResult{OK: false, Error: fmt.Sprintf("setting up local sync mirror: %v", err)}
 	}
 
 	res := GoogleDriveAuthResult{OK: true}
-	if rootFolderID == "" && subfolder != "" {
-		if link, err := rcloneutil.ShareableLink(a.ctx, remoteName, subfolder); err == nil {
-			res.ShareLink = link
+	if !isGuest {
+		link, err := rcloneutil.ShareableLink(a.ctx, remoteName, subfolder)
+		if err != nil {
+			return GoogleDriveAuthResult{OK: false, Error: fmt.Sprintf("creating a share link: %v", err)}
 		}
+		if strings.TrimSpace(link) == "" {
+			return GoogleDriveAuthResult{OK: false, Error: "Google Drive did not return a share link; open Drive, share the sync folder manually, then try again"}
+		}
+		res.ShareLink = link
 	}
 	return res
 }
@@ -168,7 +214,16 @@ func (a *App) GetGoogleDriveMirrorStatus() GoogleDriveMirrorStatus {
 // ---- Config ----
 
 func (a *App) ConfigExists() bool {
-	return config.Exists()
+	cfg, err := config.Load()
+	if err != nil {
+		return false
+	}
+	if cfg.SetupComplete {
+		return true
+	}
+	// Migrate successful pre-1.0 configs without treating a config written by
+	// an old failed/cancelled wizard as a completed setup.
+	return orchestrate.Status(cfg).LinkedOK
 }
 
 func (a *App) GetConfig() config.Config {
@@ -179,12 +234,9 @@ func (a *App) GetConfig() config.Config {
 	return cfg
 }
 
-func (a *App) SaveConfigCmd(cfg config.Config) string {
-	if err := config.Save(cfg); err != nil {
-		return err.Error()
-	}
-	return ""
-}
+// Platform lets the wizard choose the native Drive Desktop folder flow on
+// Windows and the rclone/bisync authorization flow on Linux.
+func (a *App) Platform() string { return goruntime.GOOS }
 
 // ---- Path detection ----
 
@@ -217,14 +269,25 @@ func (a *App) BrowseForFolder(title string) string {
 // ---- Setup / Status / Recover ----
 
 func (a *App) RunSetup(cfg config.Config, savePathOverride string) orchestrate.SetupResult {
+	a.opMu.Lock()
+	defer a.opMu.Unlock()
 	res := orchestrate.Setup(cfg, savePathOverride)
 	// Record where the save folder actually turned out to be. Once it's a
 	// symlink into a non-default Steam library, auto-detection can't
 	// rediscover it, so without this the Status view would call a working
 	// setup broken from the next launch onwards.
-	if res.OK && res.SavePath != "" && cfg.SavePath != res.SavePath {
+	if res.OK {
 		cfg.SavePath = res.SavePath
-		_ = config.Save(cfg)
+		cfg.SetupComplete = true
+		if err := config.Save(cfg); err != nil {
+			res.OK = false
+			res.Error = fmt.Sprintf("Setup finished safely, but its settings could not be saved: %v. Press Finish again to retry; your saves are already linked.", err)
+		} else if cfg.CloudProvider == "googledrive" && bisync.Available() {
+			if err := bisync.EnableMirror(a.ctx); err != nil {
+				res.OK = false
+				res.Error = fmt.Sprintf("Your saves are linked safely, but Google Drive background sync could not start: %v. Press Finish again to retry.", err)
+			}
+		}
 	}
 	applog.Printf("setup: ok=%v alreadySet=%v savePath=%q target=%q err=%q",
 		res.OK, res.AlreadySet, res.SavePath, res.SyncTarget, res.Error)
@@ -234,8 +297,25 @@ func (a *App) RunSetup(cfg config.Config, savePathOverride string) orchestrate.S
 // RunUndo removes the link and restores a normal save folder. See
 // orchestrate.Undo — the cloud folder is deliberately left untouched.
 func (a *App) RunUndo() orchestrate.UndoResult {
-	cfg, _ := config.Load()
+	a.opMu.Lock()
+	defer a.opMu.Unlock()
+	cfg, err := config.Load()
+	if err != nil {
+		return orchestrate.UndoResult{Error: fmt.Sprintf("loading settings: %v", err)}
+	}
+	if cfg.CloudProvider == "googledrive" {
+		if err := bisync.DisableMirror(a.ctx); err != nil {
+			return orchestrate.UndoResult{Error: err.Error(), SavePath: cfg.SavePath}
+		}
+	}
 	res := orchestrate.Undo(cfg)
+	if res.OK {
+		cfg.SetupComplete = false
+		if err := config.Save(cfg); err != nil {
+			res.OK = false
+			res.Error = fmt.Sprintf("Syncing stopped and your local saves were restored, but the app could not save that status: %v", err)
+		}
+	}
 	applog.Printf("undo: ok=%v restored=%d err=%q", res.OK, res.Restored, res.Error)
 	return res
 }
@@ -251,19 +331,46 @@ func (a *App) GetLogTail() string {
 }
 
 func (a *App) GetStatus() orchestrate.StatusResult {
-	cfg, _ := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		return orchestrate.StatusResult{ConfigExists: config.Exists(), Error: fmt.Sprintf("loading settings: %v", err)}
+	}
 	return orchestrate.Status(cfg)
 }
 
 func (a *App) RunRecover() orchestrate.RecoverResult {
-	cfg, _ := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		return orchestrate.RecoverResult{OK: false, Error: fmt.Sprintf("loading settings: %v", err)}
+	}
 	return orchestrate.Recover(cfg)
 }
 
 // ResolveConflict moves a conflict file into a recoverable .trash folder.
 // Returns "" on success or an error message.
 func (a *App) ResolveConflict(path string) string {
-	if err := orchestrate.ResolveConflict(path); err != nil {
+	a.opMu.Lock()
+	defer a.opMu.Unlock()
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Sprintf("loading settings: %v", err)
+	}
+	if err := orchestrate.ResolveConflict(cfg, path); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// PromoteConflict keeps the selected duplicate as the canonical save while
+// preserving the previous original in recovery trash.
+func (a *App) PromoteConflict(path string) string {
+	a.opMu.Lock()
+	defer a.opMu.Unlock()
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Sprintf("loading settings: %v", err)
+	}
+	if err := orchestrate.PromoteConflict(cfg, path); err != nil {
 		return err.Error()
 	}
 	return ""

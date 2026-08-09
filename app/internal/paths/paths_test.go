@@ -28,7 +28,7 @@ func TestExpandHome(t *testing.T) {
 
 func TestDefaultCloudRootKnownProviders(t *testing.T) {
 	for _, p := range []string{"dropbox", "onedrive", "googledrive"} {
-		if got := DefaultCloudRoot(p); got == "" {
+		if got := DefaultCloudRoot(p); got == "" && !(p == "googledrive" && runtime.GOOS != "linux") {
 			t.Errorf("DefaultCloudRoot(%q) returned empty string", p)
 		}
 	}

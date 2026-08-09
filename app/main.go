@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"os"
 
 	"shogun2sync/internal/applog"
 
@@ -62,5 +63,7 @@ func main() {
 
 	if err != nil {
 		applog.Printf("fatal: %v", err)
+		closeLog()
+		os.Exit(1)
 	}
 }

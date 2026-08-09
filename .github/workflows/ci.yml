@@ -1,5 +1,11 @@
 name: CI
 
+env:
+  GO_VERSION: "1.25.0"
+  NODE_VERSION: "22.23.2"
+  NPM_VERSION: "10.9.8"
+  WAILS_VERSION: "v2.13.0"
+
 on:
   push:
     branches: [main]
@@ -14,17 +20,35 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: app/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: app/frontend/package-lock.json
+
+      - name: Pin npm
+        run: npm install --global npm@${{ env.NPM_VERSION }}
 
       # Catches version drift between the .exe metadata and the Arch package
       # on the PR that introduces it, rather than at release time.
-      - name: Check version consistency
+      - name: Check version and tool consistency
         run: |
           wails_version="$(sed -n 's/.*"productVersion"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' app/wails.json)"
           pkgbuild_version="$(sed -n 's/^pkgver=\(.*\)$/\1/p' app/packaging/PKGBUILD)"
+          rclone_version="$(sed -n 's/^RCLONE_VERSION="\([^"]*\)"/\1/p' app/packaging/build-release.sh)"
+          pkgbuild_rclone_version="$(sed -n 's/^_rclonever=\(.*\)$/\1/p' app/packaging/PKGBUILD)"
+          rclone_checksum="$(sed -n 's/^RCLONE_ARCHIVE_SHA256="\([^"]*\)"/\1/p' app/packaging/build-release.sh)"
+          rclone_copying_checksum="$(sed -n 's/^RCLONE_COPYING_SHA256="\([^"]*\)"/\1/p' app/packaging/build-release.sh)"
           echo "wails.json=$wails_version PKGBUILD=$pkgbuild_version"
+          echo "rclone release=$rclone_version PKGBUILD=$pkgbuild_rclone_version"
           [ "$wails_version" = "$pkgbuild_version" ]
+          [ "$rclone_version" = "$pkgbuild_rclone_version" ]
+          grep -Fq "$rclone_checksum" app/packaging/PKGBUILD
+          printf '%s  %s\n' "$rclone_copying_checksum" app/packaging/rclone-COPYING | sha256sum --check --strict -
+          grep -Fq "github.com/wailsapp/wails/v2 $WAILS_VERSION" app/go.mod
 
       - name: Install WebKitGTK/GTK build deps
         run: |
@@ -35,7 +59,8 @@ jobs:
         # go:embed all:frontend/dist requires this to exist before `go vet`
         # or `go test` can even compile the main package.
         run: |
-          npm install --prefix app/frontend
+          npm ci --prefix app/frontend
+          npm test --prefix app/frontend
           npm run build --prefix app/frontend
 
       - name: Check formatting
@@ -47,6 +72,10 @@ jobs:
             echo "$unformatted"
             exit 1
           fi
+
+      - name: Check Go module files
+        working-directory: app
+        run: go mod tidy -diff
 
       - name: Vet
         working-directory: app
@@ -64,11 +93,11 @@ jobs:
         run: go test -race ./...
 
       - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+        run: go install "github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}"
 
       - name: Build (Linux)
         working-directory: app
-        run: $(go env GOPATH)/bin/wails build -tags webkit2_41
+        run: $(go env GOPATH)/bin/wails build -m -nosyncgomod -tags webkit2_41
 
   # Half of what this app does is Windows-specific — directory junctions,
   # reparse points, %APPDATA% paths, file:// URLs with drive letters — and
@@ -81,8 +110,17 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: app/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: app/frontend/package-lock.json
+
+      - name: Pin npm
+        run: npm install --global npm@${{ env.NPM_VERSION }}
 
       # Run from inside the directory rather than with `npm --prefix`:
       # on Windows npm resolves a relative --prefix against the wrong root
@@ -90,7 +128,8 @@ jobs:
       - name: Build frontend
         working-directory: app/frontend
         run: |
-          npm install
+          npm ci
+          npm test
           npm run build
 
       - name: Vet
@@ -108,14 +147,23 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: app/go.sum
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: app/frontend/package-lock.json
+
+      - name: Pin npm
+        run: npm install --global npm@${{ env.NPM_VERSION }}
+
       - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+        run: go install "github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}"
 
       - name: Cross-compile Windows build
         working-directory: app
         run: |
-          npm install --prefix frontend
-          $(go env GOPATH)/bin/wails build -platform windows/amd64
+          npm ci --prefix frontend
+          $(go env GOPATH)/bin/wails build -m -nosyncgomod -platform windows/amd64

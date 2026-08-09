@@ -50,6 +50,9 @@ func TestScanFindsEachProvidersDuplicateNaming(t *testing.T) {
 			if got[0].Reason == "" {
 				t.Error("no reason given; the UI shows this so a player can overrule a bad guess")
 			}
+			if got[0].Original != tc.original {
+				t.Errorf("Original = %q, want %q so either version can be kept", got[0].Original, tc.original)
+			}
 		})
 	}
 }

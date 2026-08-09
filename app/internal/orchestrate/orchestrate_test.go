@@ -3,6 +3,7 @@ package orchestrate
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"shogun2sync/internal/config"
@@ -225,7 +226,7 @@ func TestRecoverFindsAndResolvesConflicts(t *testing.T) {
 		t.Fatalf("expected exactly 1 conflict, got %+v", rec)
 	}
 
-	if err := ResolveConflict(rec.Conflicts[0].Path); err != nil {
+	if err := ResolveConflict(cfg, rec.Conflicts[0].Path); err != nil {
 		t.Fatalf("ResolveConflict: %v", err)
 	}
 
@@ -236,5 +237,140 @@ func TestRecoverFindsAndResolvesConflicts(t *testing.T) {
 	rec2 := Recover(cfg)
 	if len(rec2.Conflicts) != 0 {
 		t.Fatalf("expected 0 conflicts after resolve, got %+v", rec2)
+	}
+}
+
+func TestSetupRejectsDangerousSubfolderNames(t *testing.T) {
+	savePath, cloudRoot := setupFakeSave(t)
+	for _, name := range []string{"", ".", "..", "../outside", "nested/folder", `nested\folder`, "CON", "bad:name"} {
+		t.Run(name, func(t *testing.T) {
+			cfg := config.Config{CloudProvider: "dropbox", CloudRoot: cloudRoot, SyncSubfolder: name}
+			res := Setup(cfg, savePath)
+			if res.OK {
+				t.Fatalf("Setup accepted dangerous sync folder %q", name)
+			}
+			if got, err := os.ReadFile(filepath.Join(savePath, "turn090.save")); err != nil || string(got) != "x" {
+				t.Fatalf("failed validation changed the save: contents=%q err=%v", got, err)
+			}
+		})
+	}
+}
+
+func TestSetupRejectsOverlappingSaveAndSyncPaths(t *testing.T) {
+	dir := t.TempDir()
+	tests := []struct {
+		name, save, root, sub string
+	}{
+		{"same", filepath.Join(dir, "save_games_multiplayer"), dir, "save_games_multiplayer"},
+		{"target inside saves", filepath.Join(dir, "nested", "save_games_multiplayer"), filepath.Join(dir, "nested", "save_games_multiplayer"), "cloud"},
+		{"saves inside target", filepath.Join(dir, "cloud", "sync", "save_games_multiplayer"), filepath.Join(dir, "cloud"), "sync"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.MkdirAll(tc.save, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(tc.root, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			marker := filepath.Join(tc.save, "keep.save")
+			if err := os.WriteFile(marker, []byte("keep"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg := config.Config{CloudProvider: "dropbox", CloudRoot: tc.root, SyncSubfolder: tc.sub}
+			if res := Setup(cfg, tc.save); res.OK {
+				t.Fatalf("Setup accepted overlapping paths: %+v", res)
+			} else if !strings.Contains(res.Error, "overlapping") {
+				t.Fatalf("Setup failed for the wrong reason: %s", res.Error)
+			}
+			if got, err := os.ReadFile(marker); err != nil || string(got) != "keep" {
+				t.Fatalf("overlap rejection changed save: contents=%q err=%v", got, err)
+			}
+		})
+	}
+}
+
+func TestSetupRejectsWrongManualFolder(t *testing.T) {
+	dir := t.TempDir()
+	savePath := filepath.Join(dir, "Shogun2")
+	cloudRoot := filepath.Join(dir, "cloud")
+	if err := os.MkdirAll(savePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cloudRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(savePath, "do-not-move.txt")
+	if err := os.WriteFile(marker, []byte("safe"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{CloudProvider: "dropbox", CloudRoot: cloudRoot, SyncSubfolder: "Shogun2SaveSync"}
+	if res := Setup(cfg, savePath); res.OK {
+		t.Fatalf("Setup accepted a parent directory: %+v", res)
+	}
+	if got, err := os.ReadFile(marker); err != nil || string(got) != "safe" {
+		t.Fatalf("rejected directory was modified: contents=%q err=%v", got, err)
+	}
+}
+
+func TestResolveConflictRejectsArbitraryFiles(t *testing.T) {
+	_, cloudRoot := setupFakeSave(t)
+	cfg := config.Config{CloudProvider: "dropbox", CloudRoot: cloudRoot, SyncSubfolder: "Shogun2SaveSync"}
+	if err := os.MkdirAll(SyncTarget(cfg), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "private.save")
+	if err := os.WriteFile(outside, []byte("private"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ResolveConflict(cfg, outside); err == nil {
+		t.Fatal("ResolveConflict accepted a file outside the sync folder")
+	}
+	if got, err := os.ReadFile(outside); err != nil || string(got) != "private" {
+		t.Fatalf("outside file was changed: contents=%q err=%v", got, err)
+	}
+
+	ordinary := filepath.Join(SyncTarget(cfg), "ordinary.save")
+	if err := os.WriteFile(ordinary, []byte("ordinary"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ResolveConflict(cfg, ordinary); err == nil {
+		t.Fatal("ResolveConflict accepted a non-conflict save")
+	}
+	if _, err := os.Stat(ordinary); err != nil {
+		t.Fatalf("ordinary save was changed: %v", err)
+	}
+}
+
+func TestPromoteConflictKeepsSelectedCopyAndPreservesOriginal(t *testing.T) {
+	savePath, cloudRoot := setupFakeSave(t)
+	cfg := config.Config{CloudProvider: "dropbox", CloudRoot: cloudRoot, SyncSubfolder: "Shogun2SaveSync"}
+	if res := Setup(cfg, savePath); !res.OK {
+		t.Fatalf("Setup failed: %s", res.Error)
+	}
+	target := SyncTarget(cfg)
+	original := filepath.Join(target, "turn090.save")
+	conflict := filepath.Join(target, "turn090 (Friend's conflicted copy 2026-08-07).save")
+	if err := os.WriteFile(conflict, []byte("new chosen state"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := PromoteConflict(cfg, conflict); err != nil {
+		t.Fatalf("PromoteConflict failed: %v", err)
+	}
+	got, err := os.ReadFile(original)
+	if err != nil || string(got) != "new chosen state" {
+		t.Fatalf("promoted original contents=%q err=%v", got, err)
+	}
+	if _, err := os.Stat(conflict); !os.IsNotExist(err) {
+		t.Fatalf("conflict name should be gone, stat err=%v", err)
+	}
+	trashEntries, err := os.ReadDir(filepath.Join(target, ".shogun2sync-trash"))
+	if err != nil || len(trashEntries) != 1 {
+		t.Fatalf("recovery trash entries=%v err=%v", trashEntries, err)
+	}
+	old, err := os.ReadFile(filepath.Join(target, ".shogun2sync-trash", trashEntries[0].Name()))
+	if err != nil || string(old) != "x" {
+		t.Fatalf("previous original was not preserved: contents=%q err=%v", old, err)
 	}
 }

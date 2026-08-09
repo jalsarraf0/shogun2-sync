@@ -4,7 +4,7 @@ import {main} from '../models';
 import {config} from '../models';
 import {orchestrate} from '../models';
 
-export function AuthorizeGoogleDrive(arg1:string,arg2:string):Promise<main.GoogleDriveAuthResult>;
+export function AuthorizeGoogleDrive(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.GoogleDriveAuthResult>;
 
 export function BrowseForFolder(arg1:string):Promise<string>;
 
@@ -30,6 +30,10 @@ export function OpenInFileManager(arg1:string):Promise<void>;
 
 export function PathExists(arg1:string):Promise<boolean>;
 
+export function Platform():Promise<string>;
+
+export function PromoteConflict(arg1:string):Promise<string>;
+
 export function ResolveConflict(arg1:string):Promise<string>;
 
 export function RunRecover():Promise<orchestrate.RecoverResult>;
@@ -37,5 +41,3 @@ export function RunRecover():Promise<orchestrate.RecoverResult>;
 export function RunSetup(arg1:config.Config,arg2:string):Promise<orchestrate.SetupResult>;
 
 export function RunUndo():Promise<orchestrate.UndoResult>;
-
-export function SaveConfigCmd(arg1:config.Config):Promise<string>;

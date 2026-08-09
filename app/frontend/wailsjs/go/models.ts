@@ -5,6 +5,7 @@ export namespace config {
 	    cloud_root: string;
 	    sync_subfolder: string;
 	    save_path?: string;
+	    setup_complete?: boolean;
 	    gdrive_client_id?: string;
 	    gdrive_client_secret?: string;
 	
@@ -18,6 +19,7 @@ export namespace config {
 	        this.cloud_root = source["cloud_root"];
 	        this.sync_subfolder = source["sync_subfolder"];
 	        this.save_path = source["save_path"];
+	        this.setup_complete = source["setup_complete"];
 	        this.gdrive_client_id = source["gdrive_client_id"];
 	        this.gdrive_client_secret = source["gdrive_client_secret"];
 	    }
@@ -157,6 +159,7 @@ export namespace orchestrate {
 	    syncTarget: string;
 	    linked: boolean;
 	    linkedOk: boolean;
+	    error?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new StatusResult(source);
@@ -169,6 +172,7 @@ export namespace orchestrate {
 	        this.syncTarget = source["syncTarget"];
 	        this.linked = source["linked"];
 	        this.linkedOk = source["linkedOk"];
+	        this.error = source["error"];
 	    }
 	}
 	export class UndoResult {

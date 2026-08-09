@@ -56,11 +56,47 @@ func Inspect(savePath, syncTarget string) (LinkStatus, error) {
 	}
 
 	if st.IsLink {
-		absTarget, _ := filepath.Abs(syncTarget)
-		absLinkTarget, _ := filepath.Abs(st.LinkTarget)
-		st.MatchesTarget = absTarget == absLinkTarget
+		absTarget := canonicalPath(syncTarget)
+		absLinkTarget := canonicalPath(st.LinkTarget)
+		if runtime.GOOS == "windows" {
+			st.MatchesTarget = strings.EqualFold(absTarget, absLinkTarget)
+		} else {
+			st.MatchesTarget = absTarget == absLinkTarget
+		}
 	}
 	return st, nil
+}
+
+func canonicalPath(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		abs = filepath.Clean(p)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	}
+	return filepath.Clean(abs)
+}
+
+func samePath(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+func inside(path, parent string) bool {
+	rel, err := filepath.Rel(parent, path)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func rejectOverlappingDirectories(src, dst string) error {
+	src = canonicalPath(src)
+	dst = canonicalPath(dst)
+	if samePath(src, dst) || inside(src, dst) || inside(dst, src) {
+		return fmt.Errorf("refusing to move overlapping folders: %s and %s", src, dst)
+	}
+	return nil
 }
 
 // MoveContents moves every entry from src into dst (both must already
@@ -72,20 +108,20 @@ func Inspect(savePath, syncTarget string) (LinkStatus, error) {
 // Linux, ERROR_NOT_SAME_DEVICE on Windows). So a failed rename falls back
 // to copy-then-delete rather than aborting setup.
 func MoveContents(src, dst string) error {
+	if err := rejectOverlappingDirectories(src, dst); err != nil {
+		return err
+	}
 	entries, err := os.ReadDir(src)
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", src, err)
 	}
 	for _, e := range entries {
 		from := filepath.Join(src, e.Name())
-		to := nonClobberingPath(filepath.Join(dst, e.Name()))
-		if err := os.Rename(from, to); err != nil {
-			if cerr := copyPath(from, to); cerr != nil {
-				return fmt.Errorf("moving %s: rename failed (%v), and copying instead failed: %w", e.Name(), err, cerr)
-			}
-			if rerr := os.RemoveAll(from); rerr != nil {
-				return fmt.Errorf("removing %s after copying it: %w", e.Name(), rerr)
-			}
+		if _, err := copyToAvailable(from, filepath.Join(dst, e.Name())); err != nil {
+			return fmt.Errorf("moving %s safely: %w", e.Name(), err)
+		}
+		if rerr := os.RemoveAll(from); rerr != nil {
+			return fmt.Errorf("removing %s after copying it: %w", e.Name(), rerr)
 		}
 	}
 	return os.Remove(src)
@@ -132,13 +168,29 @@ func CopyContents(src, dst string) (int, error) {
 	}
 	n := 0
 	for _, e := range entries {
-		to := nonClobberingPath(filepath.Join(dst, e.Name()))
-		if err := copyPath(filepath.Join(src, e.Name()), to); err != nil {
+		if _, err := copyToAvailable(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
 			return n, fmt.Errorf("copying %s: %w", e.Name(), err)
 		}
 		n++
 	}
 	return n, nil
+}
+
+// copyToAvailable closes the race between choosing a non-clobbering name and
+// creating it. Cloud clients can materialise a file at any moment; exclusive
+// creation makes that a retry instead of an overwrite.
+func copyToAvailable(src, want string) (string, error) {
+	for attempts := 0; attempts < 100; attempts++ {
+		dst := nonClobberingPath(want)
+		if err := copyPath(src, dst); err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			return "", err
+		}
+		return dst, nil
+	}
+	return "", fmt.Errorf("could not reserve a safe destination for %s", filepath.Base(want))
 }
 
 // Unlink removes the link at savePath without touching whatever it points
@@ -174,9 +226,15 @@ func copyPath(src, dst string) error {
 		return os.Symlink(target, dst)
 
 	case info.IsDir():
-		if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
+		if err := os.Mkdir(dst, info.Mode().Perm()); err != nil {
 			return err
 		}
+		complete := false
+		defer func() {
+			if !complete {
+				_ = os.RemoveAll(dst)
+			}
+		}()
 		entries, err := os.ReadDir(src)
 		if err != nil {
 			return err
@@ -186,7 +244,11 @@ func copyPath(src, dst string) error {
 				return err
 			}
 		}
-		return os.Chtimes(dst, time.Now(), info.ModTime())
+		if err := os.Chtimes(dst, time.Now(), info.ModTime()); err != nil {
+			return err
+		}
+		complete = true
+		return nil
 
 	case info.Mode().IsRegular():
 		if err := copyFile(src, dst, info.Mode().Perm()); err != nil {
@@ -206,15 +268,25 @@ func copyFile(src, dst string, perm os.FileMode) error {
 	}
 	defer in.Close()
 
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
 	if err != nil {
 		return err
 	}
 	if _, err := io.Copy(out, in); err != nil {
 		out.Close()
+		_ = os.Remove(dst)
 		return err
 	}
-	return out.Close()
+	if err := out.Sync(); err != nil {
+		out.Close()
+		_ = os.Remove(dst)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(dst)
+		return err
+	}
+	return nil
 }
 
 // Link creates a link at savePath pointing at target. On Linux this is a

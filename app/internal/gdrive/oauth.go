@@ -4,8 +4,8 @@
 // Why: rclone's own built-in OAuth webserver proved unreliable in practice
 // (its local callback listener died seconds after starting, well before a
 // human could complete the browser login, producing a bare "connection
-// refused" with no diagnosable cause). Since we control this server, every
-// request is logged and the wait window is generous.
+// refused" with no diagnosable cause). Since we control this server, its
+// wait window is generous and callback credentials never need to be logged.
 //
 // We reuse rclone's own OAuth client credentials rather than registering a
 // new one. This isn't a workaround: rclone's client_id/client_secret are
@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"log"
 	"net"
 	"net/http"
@@ -44,6 +45,12 @@ const (
 
 	driveScope  = "https://www.googleapis.com/auth/drive"
 	authTimeout = 5 * time.Minute
+
+	callbackReadHeaderTimeout = 5 * time.Second
+	callbackReadTimeout       = 10 * time.Second
+	callbackWriteTimeout      = 10 * time.Second
+	callbackIdleTimeout       = 30 * time.Second
+	callbackShutdownTimeout   = 2 * time.Second
 )
 
 // obscureKey is rclone's fixed AES-CTR key for its "obscure" scheme
@@ -101,6 +108,20 @@ type Credentials struct {
 	ClientSecret string
 }
 
+// Validate prevents a partially configured custom OAuth client from silently
+// falling back to unrelated credentials or failing after the browser opens.
+func (c Credentials) Validate() error {
+	idSet := strings.TrimSpace(c.ClientID) != ""
+	secretSet := strings.TrimSpace(c.ClientSecret) != ""
+	if !idSet && !secretSet {
+		return errors.New("no Google OAuth credentials configured")
+	}
+	if idSet != secretSet {
+		return errors.New("Google client ID and client secret must be provided together")
+	}
+	return nil
+}
+
 // Shared returns rclone's own public client credentials.
 //
 // rclone's docs now say this shared client "is being retired and will stop
@@ -145,8 +166,8 @@ func classifyExchangeError(err error) error {
 // CLI, and rclone itself), waits for the redirect, and exchanges the code
 // for a token.
 func Authorize(ctx context.Context, creds Credentials, openURL func(string) error) (*AuthResult, error) {
-	if creds.ClientID == "" || creds.ClientSecret == "" {
-		return nil, errors.New("no Google client ID configured")
+	if err := creds.Validate(); err != nil {
+		return nil, err
 	}
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -176,51 +197,23 @@ func Authorize(ctx context.Context, creds Credentials, openURL func(string) erro
 	errCh := make(chan error, 1)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("gdrive oauth: callback hit: %s", r.URL.String())
-		q := r.URL.Query()
+	mux.Handle("/", callbackHandler(state, codeCh, errCh))
 
-		if got := q.Get("state"); got != state {
-			http.Error(w, "state mismatch", http.StatusBadRequest)
-			select {
-			case errCh <- fmt.Errorf("state mismatch (got %q)", got):
-			default:
-			}
-			return
-		}
-		if msg := q.Get("error"); msg != "" {
-			fmt.Fprintf(w, "<html><body><h2>Authorization failed: %s</h2><p>You can close this window.</p></body></html>", msg)
-			select {
-			case errCh <- fmt.Errorf("google returned error: %s", msg):
-			default:
-			}
-			return
-		}
-		code := q.Get("code")
-		if code == "" {
-			http.Error(w, "missing code", http.StatusBadRequest)
-			select {
-			case errCh <- fmt.Errorf("callback had no code"):
-			default:
-			}
-			return
-		}
-		fmt.Fprint(w, "<html><body><h2>Success!</h2><p>You can close this window and go back to Shogun2 Sync.</p></body></html>")
-		select {
-		case codeCh <- code:
-		default:
-		}
-	})
-
-	srv := &http.Server{Handler: mux}
+	srv := newCallbackServer(mux)
 	go func() {
 		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Printf("gdrive oauth: local server error: %v", err)
 		}
 	}()
-	defer srv.Shutdown(context.Background())
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), callbackShutdownTimeout)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
 
-	log.Printf("gdrive oauth: listening on %s, opening browser", redirectURL)
+	// Do not log redirectURL or authURL. Both identify the callback endpoint,
+	// and authURL also contains the OAuth state value.
+	log.Printf("gdrive oauth: local callback server ready; opening browser")
 	if err := openURL(authURL); err != nil {
 		return nil, fmt.Errorf("open browser: %w", err)
 	}
@@ -247,4 +240,50 @@ func Authorize(ctx context.Context, creds Credentials, openURL func(string) erro
 	}
 
 	return &AuthResult{Token: token, TokenJSON: string(tokenJSON)}, nil
+}
+
+func callbackHandler(state string, codeCh chan<- string, errCh chan<- error) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+
+		if got := q.Get("state"); got != state {
+			http.Error(w, "state mismatch", http.StatusBadRequest)
+			// A browser extension, stale tab, or unrelated loopback request must
+			// not cancel the real flow. Keep waiting for the callback that has
+			// the state generated for this authorization attempt.
+			return
+		}
+		if msg := q.Get("error"); msg != "" {
+			fmt.Fprintf(w, "<html><body><h2>Authorization failed: %s</h2><p>You can close this window.</p></body></html>", html.EscapeString(msg))
+			select {
+			case errCh <- fmt.Errorf("google returned error: %s", msg):
+			default:
+			}
+			return
+		}
+		code := q.Get("code")
+		if code == "" {
+			http.Error(w, "missing code", http.StatusBadRequest)
+			select {
+			case errCh <- fmt.Errorf("callback had no code"):
+			default:
+			}
+			return
+		}
+		fmt.Fprint(w, "<html><body><h2>Success!</h2><p>You can close this window and go back to Shogun2 Sync.</p></body></html>")
+		select {
+		case codeCh <- code:
+		default:
+		}
+	})
+}
+
+func newCallbackServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: callbackReadHeaderTimeout,
+		ReadTimeout:       callbackReadTimeout,
+		WriteTimeout:      callbackWriteTimeout,
+		IdleTimeout:       callbackIdleTimeout,
+	}
 }

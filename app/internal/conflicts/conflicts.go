@@ -110,17 +110,27 @@ func Scan(dir string) ([]File, error) {
 // human-readable reason (empty if it doesn't) and the file it appears to
 // duplicate, when a sibling was what gave it away.
 func classify(name string, siblings map[string]bool) (reason, original string) {
-	if wordConflict.MatchString(name) {
-		return "Named as a conflicted copy", ""
-	}
-
 	// rclone's suffix sits after the extension, so check it before
-	// splitting one off.
+	// splitting one off or the broader word-conflict rule below.
 	if trimmed := rcloneSuffix.ReplaceAllString(name, ""); trimmed != name {
 		if siblings[trimmed] {
 			return "Duplicate left by the background sync", trimmed
 		}
 		return "Duplicate left by the background sync", ""
+	}
+
+	if wordConflict.MatchString(name) {
+		ext := filepath.Ext(name)
+		stem := strings.TrimSuffix(name, ext)
+		// Dropbox and setup-time collisions put their conflict description in
+		// a final parenthesised suffix. When the unsuffixed sibling exists we
+		// can safely offer either version as the one to keep.
+		if open := strings.LastIndex(stem, " ("); open >= 0 {
+			if orig := stem[:open] + ext; siblings[orig] {
+				return "Named as a conflicted copy", orig
+			}
+		}
+		return "Named as a conflicted copy", ""
 	}
 
 	ext := filepath.Ext(name)

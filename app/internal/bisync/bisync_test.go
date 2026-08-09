@@ -20,11 +20,10 @@ func TestShellQuoteSurvivesApostrophes(t *testing.T) {
 	}
 }
 
-// systemd reads "%" as the start of a specifier, so a literal one in a
-// path has to be doubled or the unit silently points somewhere else.
-func TestSystemdEscapeDoublesPercent(t *testing.T) {
-	if got := systemdEscape("/home/ken/100%/run.sh"); got != "/home/ken/100%%/run.sh" {
-		t.Errorf("systemdEscape = %q", got)
+func TestSystemdQuoteProtectsSpecialCharacters(t *testing.T) {
+	want := `"/home/ken/My $$aves/100%%/run\\\"now.sh"`
+	if got := systemdQuote(`/home/ken/My $aves/100%/run\"now.sh`); got != want {
+		t.Errorf("systemdQuote = %q, want %q", got, want)
 	}
 }
 
@@ -53,6 +52,7 @@ func TestSyncScriptIsValidShellAndQuotesPaths(t *testing.T) {
 	// overwrite the other player's newer saves.
 	for _, want := range []string{
 		`if [ "$status" -eq 7 ] && [ -z "$(ls -A "$LOCAL" 2>/dev/null)" ]; then`,
+		"--resync-mode path2",
 		"--resilient",
 		"--recover",
 		"--max-lock 2m",
@@ -115,5 +115,14 @@ func TestScriptDoesNotResyncWhenLocalFolderHasSaves(t *testing.T) {
 	calls, _ = readFile(dir + "/calls")
 	if !strings.Contains(calls, "--resync") {
 		t.Fatalf("empty folder should have triggered the safe --resync:\n%s", calls)
+	}
+	if !strings.Contains(calls, "--resync-mode path2") {
+		t.Fatalf("empty-folder recovery must make the remote side authoritative:\n%s", calls)
+	}
+}
+
+func TestMinimumRcloneVersionCoversGeneratedFlags(t *testing.T) {
+	if MinRcloneMajor != 1 || MinRcloneMinor < 71 {
+		t.Fatalf("minimum rclone is %d.%d; generated bisync flags require 1.71+", MinRcloneMajor, MinRcloneMinor)
 	}
 }

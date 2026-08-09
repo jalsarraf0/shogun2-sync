@@ -74,6 +74,9 @@ func rotate(p string) {
 	if err != nil || info.Size() < maxSize {
 		return
 	}
+	// Windows rename does not replace an existing destination. Remove only
+	// this app's previous rotation first so rotation keeps working forever.
+	_ = os.Remove(p + ".1")
 	_ = os.Rename(p, p+".1")
 }
 

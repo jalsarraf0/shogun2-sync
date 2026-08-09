@@ -141,8 +141,12 @@ func DefaultCloudRoot(provider string) string {
 		}
 		return filepath.Join(home, "OneDrive")
 	case "googledrive":
-		if runtime.GOOS == "windows" {
-			return filepath.Join(home, "My Drive")
+		if runtime.GOOS != "linux" {
+			// Drive for desktop can use a drive letter, a mirrored directory, or
+			// a user-chosen mount. Guessing ~/My Drive is usually wrong and lets a
+			// setup appear successful without touching the shared folder. Require
+			// the player to choose the local mirrored folder explicitly.
+			return ""
 		}
 		// Linux: our own rclone-bisync mirror directory, not a native client.
 		return filepath.Join(home, "GoogleDriveSync")

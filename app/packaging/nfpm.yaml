@@ -1,5 +1,7 @@
+# yaml-language-server: $schema=https://nfpm.goreleaser.com/schema.json
 # nfpm config for the .deb, .rpm, and Arch packages.
-# Build the binary first (`wails build -tags webkit2_41`), then:
+# `build-release.sh` builds the app and stages its verified private rclone
+# runtime before invoking these commands. To package manually, do the same.
 #   nfpm package --config packaging/nfpm.yaml --packager deb
 #   nfpm package --config packaging/nfpm.yaml --packager rpm
 #   nfpm package --config packaging/nfpm.yaml --packager archlinux
@@ -18,15 +20,36 @@ vendor: shogun2-sync
 homepage: https://github.com/jalsarraf0/shogun2-sync
 license: MIT
 
-depends:
-  - rclone
+# Runtime library names differ between package ecosystems. Keep these in
+# overrides so each artifact asks its native package manager for real names.
+overrides:
+  deb:
+    depends:
+      - libgtk-3-0t64 | libgtk-3-0
+      - libwebkit2gtk-4.1-0
+  rpm:
+    depends:
+      - gtk3
+      - webkit2gtk4.1
+  archlinux:
+    depends:
+      - gtk3
+      - webkit2gtk-4.1
 
 contents:
   - src: ./build/bin/shogun2sync
     dst: /usr/bin/shogun2sync
     file_info:
       mode: 0755
+  - src: ./build/bin/rclone
+    dst: /usr/lib/shogun2sync/rclone
+    file_info:
+      mode: 0755
+  - src: ./packaging/rclone-COPYING
+    dst: /usr/share/licenses/shogun2sync/rclone-COPYING
+    file_info:
+      mode: 0644
   - src: ./packaging/shogun2sync.desktop
     dst: /usr/share/applications/shogun2sync.desktop
-  - src: ./build/appicon.png
+  - src: ./packaging/appicon-512.png
     dst: /usr/share/icons/hicolor/512x512/apps/shogun2sync.png

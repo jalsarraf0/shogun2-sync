@@ -21,18 +21,20 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"shogun2sync/internal/rcloneutil"
 )
 
 const (
 	ServiceName = "shogun2sync-gdrive-bisync"
 
 	// MinRcloneMajor/Minor is the oldest rclone that understands the flags
-	// below. --recover, --max-lock and the --conflict-* family all landed
-	// together in rclone 1.66.0 (March 2024). On anything older the timer
+	// below. --recover, --max-lock, --resync-mode and the --conflict-*
+	// family are all available together from rclone 1.71. On anything older the timer
 	// would fail on every single run with "unknown flag", so this is
 	// checked up front where we can still say something useful.
 	MinRcloneMajor = 1
-	MinRcloneMinor = 66
+	MinRcloneMinor = 71
 )
 
 // Available reports whether this mechanism applies on this OS at all.
@@ -44,7 +46,11 @@ var versionRe = regexp.MustCompile(`v(\d+)\.(\d+)(?:\.(\d+))?`)
 
 // Version returns the installed rclone's major and minor version.
 func Version(ctx context.Context) (major, minor int, err error) {
-	out, err := exec.CommandContext(ctx, "rclone", "version").Output()
+	rclonePath, err := rcloneutil.Path()
+	if err != nil {
+		return 0, 0, err
+	}
+	out, err := exec.CommandContext(ctx, rclonePath, "version").Output()
 	if err != nil {
 		return 0, 0, fmt.Errorf("running rclone version: %w", err)
 	}
@@ -79,11 +85,17 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// systemdEscape protects a value used in a unit file. systemd expands "%"
-// as the start of a specifier, so a literal one has to be doubled or the
-// path silently turns into something else.
-func systemdEscape(s string) string {
-	return strings.ReplaceAll(s, "%", "%%")
+// systemdQuote protects one ExecStart argument. Unit files have their own
+// quoting rules: percent starts a specifier, dollar starts environment
+// expansion, and spaces split arguments even though no shell is involved.
+func systemdQuote(s string) string {
+	r := strings.NewReplacer(
+		`\`, `\\`,
+		`"`, `\"`,
+		`%`, `%%`,
+		`$`, `$$`,
+	)
+	return `"` + r.Replace(s) + `"`
 }
 
 // syncScript is the body of the script the timer runs.
@@ -102,6 +114,13 @@ RCLONE=%s
 LOCAL=%s
 REMOTE=%s
 LOG=%s
+
+# Keep support logs useful without allowing an unattended timer to grow one
+# forever. One previous generation is enough for diagnosing a recurring job.
+if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 1048576 ]; then
+  rm -f "$LOG.1"
+  mv "$LOG" "$LOG.1"
+fi
 
 "$RCLONE" bisync "$LOCAL" "$REMOTE" \
   --resilient --recover --max-lock 2m \
@@ -122,7 +141,8 @@ fi
 # often, since bisync treats a legitimately empty folder as
 # indistinguishable from a mount that dropped out.
 if [ "$status" -eq 7 ] && [ -z "$(ls -A "$LOCAL" 2>/dev/null)" ]; then
-  exec "$RCLONE" bisync "$LOCAL" "$REMOTE" --resync --create-empty-src-dirs \
+  exec "$RCLONE" bisync "$LOCAL" "$REMOTE" --resync --resync-mode path2 \
+    --create-empty-src-dirs \
     --log-file "$LOG" --log-format date,time -v
 fi
 
@@ -141,13 +161,18 @@ func Paths() (scriptPath, logPath string, err error) {
 }
 
 // EnsureMirror establishes (or re-establishes) a bisync baseline between
-// localDir and remoteName:remoteSubfolder, then installs and enables a
-// systemd --user timer that keeps them in sync.
-func EnsureMirror(ctx context.Context, remoteName, remoteSubfolder, localDir string) error {
+// localDir and remoteName:remoteSubfolder, then installs the systemd user
+// units that will keep them in sync. It deliberately does not enable the
+// timer: browser authorization happens before the player's final confirmation,
+// so RunSetup activates the timer only after the save-folder link succeeds.
+// remoteRootIsSyncFolder must only be true when the remote itself is scoped to
+// the shared save folder; that explicit flag prevents an accidental empty
+// subfolder from mirroring the player's entire Drive.
+func EnsureMirror(ctx context.Context, remoteName, remoteSubfolder, localDir string, remoteRootIsSyncFolder bool) error {
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("bisync is only needed on Linux")
 	}
-	rclonePath, err := exec.LookPath("rclone")
+	rclonePath, err := rcloneutil.Path()
 	if err != nil {
 		return fmt.Errorf("rclone is not installed")
 	}
@@ -157,7 +182,7 @@ func EnsureMirror(ctx context.Context, remoteName, remoteSubfolder, localDir str
 	if err := CheckVersion(ctx); err != nil {
 		return err
 	}
-	if remoteSubfolder == "" {
+	if remoteSubfolder == "" && !remoteRootIsSyncFolder {
 		// Without this an empty subfolder would mirror the player's entire
 		// Drive into a game-saves folder.
 		return fmt.Errorf("refusing to mirror the whole Drive: no sync folder was given")
@@ -167,14 +192,6 @@ func EnsureMirror(ctx context.Context, remoteName, remoteSubfolder, localDir str
 		return fmt.Errorf("creating %s: %w", localDir, err)
 	}
 
-	remote := remoteName + ":" + remoteSubfolder
-
-	baseline := exec.CommandContext(ctx, rclonePath, "bisync", localDir, remote,
-		"--resync", "--create-empty-src-dirs")
-	if out, err := baseline.CombinedOutput(); err != nil {
-		return fmt.Errorf("initial sync failed: %w: %s", err, out)
-	}
-
 	scriptPath, logPath, err := Paths()
 	if err != nil {
 		return err
@@ -182,7 +199,29 @@ func EnsureMirror(ctx context.Context, remoteName, remoteSubfolder, localDir str
 	if err := os.MkdirAll(filepath.Dir(scriptPath), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(scriptPath, []byte(syncScript(rclonePath, localDir, remote, logPath)), 0o755); err != nil {
+	remote := remoteName + ":" + remoteSubfolder
+	desiredScript := syncScript(rclonePath, localDir, remote, logPath)
+	currentScript, _ := os.ReadFile(scriptPath)
+	// Script flags and the bundled rclone path can change during an app
+	// update without changing the mirror pair. Reinitialising merely because
+	// the generated script improved would perform an unnecessary resync.
+	current := string(currentScript)
+	alreadyInitialised := strings.Contains(current, "\nLOCAL="+shellQuote(localDir)+"\n") &&
+		strings.Contains(current, "\nREMOTE="+shellQuote(remote)+"\n")
+	if !alreadyInitialised {
+		// "newer" is deliberate. Bare --resync defaults to path1 and can
+		// overwrite a newer save on Drive with an older local copy when a user
+		// reconnects. Initialising a changed pair keeps the newest side and the
+		// conflict flags preserve equal-time disagreements as visible copies.
+		baseline := exec.CommandContext(ctx, rclonePath, "bisync", localDir, remote,
+			"--resync", "--resync-mode", "newer",
+			"--conflict-resolve", "newer", "--conflict-loser", "num",
+			"--conflict-suffix", "conflict", "--create-empty-src-dirs")
+		if out, err := baseline.CombinedOutput(); err != nil {
+			return fmt.Errorf("initial sync failed: %w: %s", err, out)
+		}
+	}
+	if err := os.WriteFile(scriptPath, []byte(desiredScript), 0o755); err != nil {
 		return fmt.Errorf("writing %s: %w", scriptPath, err)
 	}
 
@@ -206,7 +245,7 @@ Description=Sync the Shogun 2 save folder with Google Drive
 [Service]
 Type=oneshot
 ExecStart=%s %s
-`, systemdEscape(shPath), systemdEscape(scriptPath))
+`, systemdQuote(shPath), systemdQuote(scriptPath))
 
 	timerContents := `[Unit]
 Description=Run the Shogun 2 Google Drive sync every 2 minutes
@@ -230,17 +269,50 @@ WantedBy=timers.target
 		return err
 	}
 
-	steps := [][]string{
-		{"systemctl", "--user", "daemon-reload"},
-		{"systemctl", "--user", "enable", "--now", ServiceName + ".timer"},
-	}
-	for _, args := range steps {
-		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("%v: %w: %s", args, err, out)
-		}
+	args := []string{"systemctl", "--user", "daemon-reload"}
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%v: %w: %s", args, err, out)
 	}
 
+	return nil
+}
+
+// EnableMirror activates the prepared timer after setup's filesystem changes
+// have completed successfully. Keeping this separate prevents a cancelled
+// first-run wizard from leaving an undisclosed background job behind.
+func EnableMirror(ctx context.Context) error {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, "systemctl", "--user", "enable", "--now", ServiceName+".timer")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("starting Google Drive background timer: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// DisableMirror stops the Linux background job without touching either side
+// of the mirror. It is intentionally idempotent so Undo stays safe even when
+// setup only got partway through.
+func DisableMirror(ctx context.Context) error {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	enabled, active := TimerStatus(ctx)
+	if enabled || active {
+		cmd := exec.CommandContext(ctx, "systemctl", "--user", "disable", "--now", ServiceName+".timer")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("stopping Google Drive background timer: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+	}
+	serviceOut, _ := exec.CommandContext(ctx, "systemctl", "--user", "is-active", ServiceName+".service").CombinedOutput()
+	if trimEq(serviceOut, "active") || trimEq(serviceOut, "activating") {
+		cmd := exec.CommandContext(ctx, "systemctl", "--user", "stop", ServiceName+".service")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("waiting for the active Google Drive sync to stop: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+	}
 	return nil
 }
 
@@ -296,6 +368,11 @@ func trimEq(b []byte, want string) bool {
 // LastSyncTime returns when the bisync service last ran successfully, for
 // display ("last synced 2 minutes ago"). Returns zero time if unknown.
 func LastSyncTime(ctx context.Context) time.Time {
+	statusOut, err := exec.CommandContext(ctx, "systemctl", "--user", "show", ServiceName+".service",
+		"--property=ExecMainStatus", "--value").CombinedOutput()
+	if err != nil || !trimEq(statusOut, "0") {
+		return time.Time{}
+	}
 	out, err := exec.CommandContext(ctx, "systemctl", "--user", "show", ServiceName+".service",
 		"--property=ExecMainExitTimestamp", "--value").CombinedOutput()
 	if err != nil {

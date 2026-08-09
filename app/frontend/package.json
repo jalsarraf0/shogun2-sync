@@ -1,10 +1,12 @@
 {
   "name": "frontend",
   "private": true,
+  "type": "module",
   "version": "0.0.0",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "test": "node --test src/ux.test.js",
     "preview": "vite preview"
   },
   "devDependencies": {
