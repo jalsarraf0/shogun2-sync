@@ -13,7 +13,7 @@
   "info": {
     "companyName": "shogun2-sync",
     "productName": "Shogun 2 Save Sync",
-    "productVersion": "1.0.4",
+    "productVersion": "1.0.5",
     "copyright": "Copyright (c) 2026 shogun2-sync contributors",
     "comments": "Keeps Shogun 2 multiplayer campaign saves in sync"
   }
